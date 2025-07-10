@@ -1,0 +1,13 @@
+lag:
+  ${data.target_column}: [-1, 1, 2, 3, 4, 5]
+  numeric_distribution_selling_promotion: -1
+
+rolling:
+  max:
+    ${data.target_column}: [2, 3, 4, 5]
+  min:
+    ${data.target_column}: [2, 3, 4, 5]
+  std:
+    ${data}.${target_column}: [2, 3, 4, 5]
+  mean:
+    ${data.target_column}: [5, 10]

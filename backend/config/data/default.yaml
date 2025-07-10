@@ -1,0 +1,7 @@
+file_path: "C:\\Users\\fraca\\Desktop\\sales\\forecast_refactored\\History_SellIn_SellOut.csv"
+separator: ";"
+date_column: "PERIOD_TAG"
+target_column: "Sellout"
+product_column: "product_group"
+nr_horizon: 1
+product_name: "Product_11"
