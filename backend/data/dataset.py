@@ -73,6 +73,14 @@ class SalesDataset:
             if isinstance(lag, int): lag = [lag]
             for l in lag:
                 df[f'{col}_{l}W'] = df.groupby(group_columns)[col].shift(l)
+        
+        
+        # % variation feature
+        for col, percentage in self.prepare_config['percentage'].items():
+            if isinstance(percentage, int): percentage = [percentage]
+            for p in percentage:
+                df[f'{col}_percentage_{p}_W'] = df.groupby(group_columns)[col].pct_change(p).clip(-2,2).shift(1)
+
 
         # Rolling features
         for op, col_window in self.prepare_config['rolling'].items():
@@ -81,7 +89,7 @@ class SalesDataset:
                 for wi in w:
                     for g in df[group_columns].drop_duplicates().values:
                         mask = (df[group_columns] == g).all(axis=1)
-                        df.loc[mask, f'{col}_rolling_{op}_{wi}W'] = df.loc[mask, col].rolling(window=wi, min_periods=1).agg(op)
+                        df.loc[mask, f'{col}_rolling_{op}_{wi}W'] = df.loc[mask, col].rolling(window=wi, min_periods=1).agg(op).shift(1)
 
         # Trend features
         for col, windows in self.prepare_config.get("trend", {}).items():
@@ -91,14 +99,16 @@ class SalesDataset:
                     mask = (df[group_columns] == g).all(axis=1)
                     df.loc[mask, f"{col}_trend_{wi}W"] = df.loc[mask, col].rolling(window=wi, min_periods=wi).apply(
                         lambda x: np.polyfit(np.arange(len(x)), x, 1)[0], raw=True
-                    )
+                    ).shift(1)
 
         for promo in [1, 2]:
             promo_col = f'type_promo_{promo}'
             if promo_col in df.columns:
                 df[f'type_promo_{promo}_current'] = df[f'type_promo_{promo}']
                 df[f'type_promo_{promo}_{self.nr_horizon}W'] = df.groupby(group_columns)[f'type_promo_{promo}'].shift(-self.nr_horizon)
-
+        
+        # eliminate every possible NaN 
+        
         df.dropna(inplace=True)
         return df
 
@@ -131,7 +141,7 @@ class SalesDataset:
 
         if train_params['boundary'] is not None:
             boundary = (df[self.date_column] - pd.to_datetime(train_params['boundary'])).abs().argmin()
-            boundary_date = df.loc[boundary, self.date_column]
+            boundary_date = df.iloc[boundary] [self.date_column]
         else:
             last_date = df[self.date_column].max()
             boundary_date = last_date - parse_time_string(train_params['test_len'])
@@ -150,15 +160,22 @@ class SalesDataset:
             exclude_columns=self.column_selection['to_exclude']
         )
 
+        train_mask = (df[self.date_column] >= begin_train_date) & (df[self.date_column] < boundary_date)
+        test_mask = (df[self.date_column] >= boundary_date) & (df[self.date_column] < end_test_date)
+
         df = df[sel_cols]
-        self.X_train = df.iloc[begin_train:boundary].copy()
-        self.X_test = df.iloc[boundary:end_test].copy()
-        self.X_test.reset_index(drop=True, inplace=True)
+
+        self.X_train = df.loc[train_mask].copy()
+        self.X_test = df.loc[test_mask].copy()
 
         self.y_train = self.X_train[y_col]
         self.X_train.drop(y_col, axis=1, inplace=True)
         self.y_test = self.X_test[y_col]
         self.X_test.drop(y_col, axis=1, inplace=True)
+
+        print(f"📅 Train: {begin_train_date.date()} → {boundary_date.date()} → {len(self.X_train)} rows")
+        print(f"📅 Test : {boundary_date.date()} → {end_test_date.date()} → {len(self.X_test)} rows")
+
 
     def get_all_products(self):
         return pd.unique(self.dataset[self.product_var])

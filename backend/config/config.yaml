@@ -2,18 +2,22 @@ defaults:
   - model: random_forest
 
 data:
-  file_path: "C:\\Users\\fraca\\Desktop\\sales\\forecast_refactored\\TEST DATI SAMPLE.xlsx"
+  file_path: "C:\\Users\\fraca\\forecast_refactored\\TEST DATI SAMPLE.xlsx"
   separator: ";"
   date_column: "Settimana"
   target_column: "Sellout"
   product_column: "Item"
   nr_horizon: -1
-  product_name: "ALPHA"
+  product_name: "DELTA"
 
 prepare:
   lag:
     ${data.target_column}: [-1, 1, 2, 3, 4, 5]
     Prezzo: [1, 2, 3, 4, 5]
+
+  percentage:
+    ${data.target_column}: [1, 2, 3, 4, 5]
+    Prezzo: [4, 8, 12]
 
   rolling:
     max:
@@ -31,10 +35,11 @@ prepare:
 
   trend:
     ${data.target_column}: [3]  # 👈 questa riga abilita la feature trend su Sellout
+    Prezzo: [3]
 
 column_selection:
   prefixes: ["type", "dispatches", "target", "numeric"]
-  suffixes: ["W", "sin", "cos", "trend"]  # 👈 importante per includere la colonna nel training
+  suffixes: ["W", "sin", "cos", "trend", "percentage"]  # 👈 importante per includere la colonna nel training
   regex: []
   to_exclude: []
   callables: []
@@ -42,7 +47,7 @@ column_selection:
 train:
   train_len: "1y"
   test_len: "3m"
-  boundary: null
+  boundary: "2025-03-10"
 
 stock:
   safety_stock_window: 4
