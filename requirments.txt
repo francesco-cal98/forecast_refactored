@@ -1,11 +1,13 @@
-pandas
-numpy
+numpy==1.26.4
+
+pandas==2.1.4
 matplotlib
 seaborn
-hydra
+hydra-core
 scikit-learn
 scipy
 fastapi
 uvicorn
 joblib
 pyyaml
+openpyxl
