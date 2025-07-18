@@ -3,6 +3,10 @@ import pandas as pd
 from omegaconf import OmegaConf
 from omegaconf import DictConfig
 from copy import deepcopy
+from datetime import date
+from sklearn.preprocessing import StandardScaler, RobustScaler
+
+
 
 import datetime
 import re
@@ -53,6 +57,13 @@ def resolve_target_keys(cfg):
         for col, lags in prepare_cfg["lag"].items():
             new_lag[target_col if col in ("${data.target_column}", "${target_column}") else col] = lags
         prepare_cfg["lag"] = new_lag
+
+    # Percentage
+    if "percentage" in prepare_cfg:
+        new_percentage = {}
+        for col, percentages in prepare_cfg["percentage"].items():
+            new_percentage[target_col if col in ("${data.target_column}", "${target_column}") else col] = percentages
+        prepare_cfg["percentage"] = new_percentage
 
     # ROLLING (chiave annidata)
     if "rolling" in prepare_cfg:
@@ -149,8 +160,20 @@ def parse_time_string(time_str: str) -> pd.DateOffset:
     
     return offset_map.get(unit, pd.DateOffset())
 
-import pandas as pd
-import re
+
+def normalize_selected_columns(X_train, X_test, include_keywords, scaler_type="standard"):
+    scaler_cls = StandardScaler if scaler_type == "standard" else RobustScaler
+
+    scaler = scaler_cls()
+    cols_to_scale = [col for col in X_train.columns if any(k in col for k in include_keywords)]
+
+    X_train_scaled = X_train.copy()
+    X_test_scaled = X_test.copy()
+
+    X_train_scaled[cols_to_scale] = scaler.fit_transform(X_train[cols_to_scale])
+    X_test_scaled[cols_to_scale] = scaler.transform(X_test[cols_to_scale])
+
+    return X_train_scaled, X_test_scaled, scaler
 
 
 def load_weekly_data_with_prices(filepath, product_var='Item', date_column='Settimana', target_column='Sellout'):
@@ -198,14 +221,20 @@ def load_weekly_data_with_prices(filepath, product_var='Item', date_column='Sett
     rows = []
 
     for _, row in df_price.iterrows():
-        for w in range(1, 5):  # 4 settimane per mese
-            settimana_num = (row['Mese'] - 1) * 4 + w
-            rows.append({
-                'Item': row['Item'],
-                'Anno': row['Anno'],
-                'Settimana_num': settimana_num,
-                'Prezzo': row['Prezzo']
-            })
+        year, month = row['Anno'], row['Mese']
+        for day in [1, 8, 15, 22, 29]:
+            try:
+                dt = date(year, month, day)
+                iso_year, iso_week, _ = dt.isocalendar()
+                rows.append({
+                    'Item': row['Item'],
+                    'Anno': iso_year,
+                    'Settimana_num': iso_week,
+                    'Prezzo': row['Prezzo']
+                })
+            except ValueError:
+                continue  # salta giorni invalidi tipo 30 febbraio
+
 
     df_price_weekly = pd.DataFrame(rows)
     
