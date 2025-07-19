@@ -30,6 +30,7 @@ def main(cfg: DictConfig):
         column_selection=cfg.column_selection,
         product_var=cfg.data.product_column,
         product_name=cfg.data.product_name,
+        granularity=cfg.data.granularity
     )
 
     print("✅ Chiavi prepare_config['lag']:", list(prepare_config['lag'].keys()))
@@ -54,7 +55,7 @@ def main(cfg: DictConfig):
 
     # 4. Predict
     y_pred, mape = forecaster.predict(dataset.X_test, dataset.y_test, error_fun=MAPE)
-    print(f"📈 MAPE: {mape:.2f}%")
+    
     
 
     # 5. Stock analysis
@@ -68,7 +69,7 @@ def main(cfg: DictConfig):
         lead_time=cfg.stock.lead_time,
         expected_service_level=cfg.stock.service_level
     )
-    df.to_excel(r"C:\Users\fraca\Desktop\sales\forecast_refactored\backend\df_out.xlsx", index=False)
+    df.to_excel(r"C:\Users\fraca\forecast_refactored\backend\df_out.xlsx", index=False)
 
 if __name__ == "__main__":
     main()

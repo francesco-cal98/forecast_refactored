@@ -51,7 +51,7 @@ def visualize_forecast_and_safety_stock(product: str,
     sns.set_style("whitegrid")
     
     # Use a colorblind-friendly palette
-    palette = sns.color_palette("colorblind", 5)
+    palette = sns.color_palette("colorblind", 6)
     fig, ax = plt.subplots(figsize=(15, 8))  # Create a large figure
 
     # X-axis for plotting
@@ -67,11 +67,13 @@ def visualize_forecast_and_safety_stock(product: str,
     # Required sell-in line (predicted stock to order)
     ax.plot(days, required_sell_in, label='Stima degli ordini', color=palette[2], linewidth=2, linestyle='--')
 
+
     # Actual sell-out values
     ax.plot(days, y, label='Sellout Effettivo', color=palette[3], linewidth=2)
 
     # Weekly stock levels after each week
     ax.plot(days, weekly_stock, label='Stock Settimanale', color=palette[4], linewidth=2, linestyle='--')
+
 
     # Titles and labels
     ax.set_title(f'Previsione, Stock e Safety Stock per {product}', fontsize=18, fontweight='bold')

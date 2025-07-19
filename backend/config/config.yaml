@@ -8,34 +8,64 @@ data:
   target_column: "Sellout"
   product_column: "Item"
   nr_horizon: -1
-  product_name: "DELTA"
+  product_name: "ALPHA"
+  granularity: "weekly"
 
 prepare:
   lag:
-    ${data.target_column}: [-1, 1, 2, 3, 4, 5]
-    Prezzo: [1, 2, 3, 4, 5]
+    weekly:
+      ${data.target_column}: [-1,3, 4, 5]
+      #${data.target_column}: [-1]
+      Prezzo: [3, 4, 5]
+    monthly:
+      ${data.target_column}: [-1, 1, 2, 3]
+      Prezzo: [1, 2, 3]
 
   percentage:
-    ${data.target_column}: [1, 2, 3, 4, 5]
-    Prezzo: [4, 8, 12]
+    weekly:
+      ${data.target_column}: [2,3,4]
+      Prezzo: [4, 8, 12]
+    monthly:
+      ${data.target_column}: [1, 2, 3]
+      Prezzo: [1,2,3]
 
   rolling:
     max:
-      ${data.target_column}: [2, 3, 4, 5]
-      Prezzo: [2, 3, 4, 5]
+      weekly:
+        ${data.target_column}: [2,3,5,10]
+        Prezzo: [3]
+      monthly:
+        ${data.target_column}: [1]
+        Prezzo: [1]
     min:
-      ${data.target_column}: [2, 3, 4, 5]
-      Prezzo: [2, 3, 4, 5]
+      weekly:
+        ${data.target_column}: [2,3,5,10]
+        Prezzo: [3]
+      monthly:
+        ${data.target_column}: [1]
+        Prezzo: [1]
     std:
-      ${data.target_column}: [2, 3, 4, 5]
-      Prezzo: [2, 3, 4, 5]
-    mean:
-      ${data.target_column}: [5, 10]
-      Prezzo: [5, 10]
+      weekly:
+        ${data.target_column}: [3,5]
+        Prezzo: [3,5]
+      monthly:
+        ${data.target_column}: [1]
+        Prezzo: [1]
+    median:
+      weekly:
+        ${data.target_column}: [5,10]
+        Prezzo: [10]
+      monthly:
+        ${data.target_column}: [1,2.3]
+        Prezzo: [1,2,3]
 
-  trend:
-    ${data.target_column}: [3]  # 👈 questa riga abilita la feature trend su Sellout
-    Prezzo: [3]
+ # trend:
+  #  weekly:
+   #   ${data.target_column}: [5]
+    #  Prezzo: [5]
+    #monthly:
+     # ${data.target_column}: [1]
+      #Prezzo: [1]
 
 column_selection:
   prefixes: ["type", "dispatches", "target", "numeric"]
@@ -45,11 +75,11 @@ column_selection:
   callables: []
 
 train:
-  train_len: "1y"
-  test_len: "3m"
-  boundary: "2025-03-10"
+  train_len: "12m"
+  test_len: "9w"
+  boundary: "2025-03-24"
 
 stock:
   safety_stock_window: 4
-  lead_time: 2
-  service_level: 0.7
+  lead_time: 1
+  service_level: 0.95

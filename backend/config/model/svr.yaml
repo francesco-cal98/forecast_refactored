@@ -1,0 +1,15 @@
+name: "svr"
+
+params:
+  kernel: "rbf"
+  C: 1.0
+  epsilon: 0.1
+  gamma: "scale"
+
+param_grid:
+  kernel: ["rbf", "linear", "poly"]
+  C: [0.05,0.1, 1, 10, 100]
+  epsilon: [0.005,0.01, 0.1, 0.5]
+  gamma: ["scale", "auto"]
+
+scoring: "neg_mean_absolute_error"

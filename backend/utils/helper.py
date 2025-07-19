@@ -5,7 +5,7 @@ from omegaconf import DictConfig
 from copy import deepcopy
 from datetime import date
 from sklearn.preprocessing import StandardScaler, RobustScaler
-
+import numpy as np 
 
 
 import datetime
@@ -51,36 +51,25 @@ def resolve_target_keys(cfg):
     prepare_cfg = deepcopy(cfg.prepare)
     target_col = cfg.data.target_column
 
-    # LAG (chiave diretta)
-    if "lag" in prepare_cfg:
-        new_lag = {}
-        for col, lags in prepare_cfg["lag"].items():
-            new_lag[target_col if col in ("${data.target_column}", "${target_column}") else col] = lags
-        prepare_cfg["lag"] = new_lag
+    def resolve_keys(d: dict) -> dict:
+        out = {}
+        for k, v in d.items():
+            new_k = target_col if k in ("${data.target_column}", "${target_column}") else k
+            out[new_k] = v
+        return out
 
-    # Percentage
-    if "percentage" in prepare_cfg:
-        new_percentage = {}
-        for col, percentages in prepare_cfg["percentage"].items():
-            new_percentage[target_col if col in ("${data.target_column}", "${target_column}") else col] = percentages
-        prepare_cfg["percentage"] = new_percentage
+    for section in ["lag", "percentage", "trend"]:
+        if section in prepare_cfg:
+            for granularity, value in prepare_cfg[section].items():
+                prepare_cfg[section][granularity] = resolve_keys(value)
 
-    # ROLLING (chiave annidata)
+    # ROLLING è più annidato (func -> col -> windows)
     if "rolling" in prepare_cfg:
-        new_rolling = {}
-        for func, cols_dict in prepare_cfg["rolling"].items():
-            new_cols_dict = {}
-            for col, windows in cols_dict.items():
-                new_cols_dict[target_col if col in ("${data.target_column}", "${target_column}") else col] = windows
-            new_rolling[func] = new_cols_dict
-        prepare_cfg["rolling"] = new_rolling
-
-    # TREND (chiave diretta, simile a LAG)
-    if "trend" in prepare_cfg:
-        new_trend = {}
-        for col, windows in prepare_cfg["trend"].items():
-            new_trend[target_col if col in ("${data.target_column}", "${target_column}") else col] = windows
-        prepare_cfg["trend"] = new_trend
+        for granularity, func_dict in prepare_cfg["rolling"].items():
+            new_func_dict = {}
+            for func, cols in func_dict.items():
+                new_func_dict[func] = resolve_keys(cols)
+            prepare_cfg["rolling"][granularity] = new_func_dict
 
     return prepare_cfg
 
@@ -256,4 +245,39 @@ def load_weekly_data_with_prices(filepath, product_var='Item', date_column='Sett
 
     return df_final
 
+def _apply_granularity(self, df: pd.DataFrame) -> pd.DataFrame:
+    granularity = self.config.get("data", {}).get("granularity", "weekly")
+    if granularity == "monthly":
+        df["Date"] = pd.to_datetime(df[self.date_column])
+        df.set_index("Date", inplace=True)
 
+        # Raggruppa per mese e item
+        df = df.groupby([pd.Grouper(freq="M"), self.product_var]).agg({
+            "Sellout": "sum",  # somma le vendite del mese
+            "Prezzo": "mean",  # media dei prezzi
+            # aggiungi qui altre colonne numeriche se servono
+        }).reset_index()
+
+        # Rinomina per compatibilità
+        df[self.date_column] = df["Date"]
+        df.drop(columns=["Date"], inplace=True)
+
+    return df
+
+
+def compute_temporal_sample_weights(y_train, strategy="linear",gamma=0.005):
+    """
+    Crea un array di pesi per dare più importanza ai dati recenti nel training set.
+    - strategy: "linear" o "exponential"
+    """
+    n = len(y_train)
+    if strategy == "linear":
+        weights = np.linspace(0.3, 1.0, n)  # peso crescente
+    elif strategy == "exponential":
+        x = np.arange(n)[::-1]  # 0 = last, n-1 = first
+        weights = np.exp(-gamma * x)
+        weights /= weights.max()  # normalizza tra 0 e 1
+    else:
+        raise ValueError("Strategia non supportata")
+
+    return weights
