@@ -69,15 +69,16 @@ prepare:
 
 column_selection:
   prefixes: ["type", "dispatches", "target", "numeric"]
-  suffixes: ["W", "sin", "cos", "trend", "percentage"]  # 👈 importante per includere la colonna nel training
+  suffixes: ["W", "sin", "cos", "trend", "percentage","season","id"]  # 👈 importante per includere la colonna nel training
+  
   regex: []
   to_exclude: []
   callables: []
 
 train:
-  train_len: "12m"
+  train_len: "14m"
   test_len: "9w"
-  boundary: "2025-03-24"
+  boundary: "2025-03-17"
 
 stock:
   safety_stock_window: 4

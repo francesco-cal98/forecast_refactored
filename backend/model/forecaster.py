@@ -1,7 +1,7 @@
 import json
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor,GradientBoostingRegressor
-from sklearn.model_selection import GridSearchCV,TimeSeriesSplit
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, PredefinedSplit
 from sklearn import svm
 from lightgbm import LGBMRegressor
 
@@ -33,26 +33,66 @@ class Forecaster:
         else:
             raise NotImplementedError(f"Model {self.model_name} not implemented.")
     
-    def gridsearch(self, X_train, y_train, param_grid=None, cv=3, scoring='neg_mean_squared_error'):
+
+    # … resto della classe …
+
+    def gridsearch(self,
+                   X_train: pd.DataFrame,
+                   y_train: pd.Series,
+                   param_grid: dict,
+                   X_val: pd.DataFrame = None,
+                   cv: int = 3,
+                   scoring: str = 'neg_mean_absolute_error'):
+        """
+        param_grid: dict degli iperparametri
+        X_val:    se fornito, serve a costruire il PredefinedSplit sulla sola serie target
+        cv:       se X_val is None, numero di split per TimeSeriesSplit
+        scoring:  metrica sklearn
+        """
         if not param_grid:
             print("⚠️ No parameter grid provided. Skipping grid search.")
             return
 
         print("🔍 Performing GridSearch...")
-        
-        gs = GridSearchCV(self.model, dict(param_grid), cv=TimeSeriesSplit(n_splits=cv).split(X_train), scoring=scoring, n_jobs=-1)
-        # compute weights for the target
-        temporal_weights = compute_temporal_sample_weights(y_train, strategy="exponential",gamma = 0.08)
-        #pred_weights = np.exp(-y_train / y_train.max())
-        #pred_weights /= pred_weights.mean()
 
-        weights = temporal_weights
-        X_train.to_excel(r"C:\Users\fraca\forecast_refactored\x_train.xlsx")
-        y_train.to_excel(r"C:\Users\fraca\forecast_refactored\y_train.xlsx")
-        gs.fit(X_train, y_train,sample_weight=weights)
+        # 1) Decido il cv_split
+        if X_val is not None:
+            # estraggo il codice del target (X_val contiene solo righe del prodotto da validare)
+            target_codes = np.unique(X_val["product_id"].values)
+            # -1 = training‐only, 0 = validation
+            test_fold = np.where(
+                np.isin(X_train["product_id"].values, target_codes),
+                0,
+               -1
+            )
+            cv_split = PredefinedSplit(test_fold=test_fold)
+        else:
+            cv_split = TimeSeriesSplit(n_splits=cv)
+
+        # 2) Inizializzo il GridSearch
+        gs = GridSearchCV(
+            estimator=self.model,
+            param_grid=dict(param_grid),
+            cv=cv_split,
+            scoring=scoring,
+            n_jobs=-1
+        )
+
+        # 3) Pesi esponenziali (se li usi)
+        weights = compute_temporal_sample_weights(y_train, strategy="exponential", gamma=0.08)
+
+        # 4) (Opzionale) dump per debug
+        # X_train.to_excel("x_train_debug.xlsx", index=False)
+        # y_train.to_excel("y_train_debug.xlsx", index=False)
+
+        # 5) Fit
+        gs.fit(X_train, y_train, sample_weight=weights)
+
+        # 6) Salva il best estimator e le feature
         self.model = gs.best_estimator_
-        self.regressor_names = gs.feature_names_in_
+        self.regressor_names = getattr(gs, "feature_names_in_", None)
         print(f"✅ Best parameters: {gs.best_params_}")
+
         
 
 
@@ -84,7 +124,13 @@ class Forecaster:
         """
 
         print("📦 Avvio analisi dello stock...")
-  
+
+        # transform back outputs
+        y_train = np.expm1(y_train)
+        y_pred_train = np.expm1(y_pred_train)
+        y_pred_test = np.expm1(y_pred_test) 
+        y_test = np.expm1(y_test)
+
         # 🔐 Calcolo della safety stock
         forecast_error_std = np.std(y_pred_train[-safety_stock_time:] - y_train[-safety_stock_time:])
         z_score = stats.norm.ppf(expected_service_level)
@@ -141,7 +187,7 @@ class Forecaster:
         current_stock = np.mean(stock_train[-weeks_to_cover:])
 
         stock_test = []
-        stock_test1 = []
+        stock_test1 = []  # 👈 Prima voce: stock iniziale
         forecast_sell_in_test = []
         lost_sales = []
         n_test = len(y_test)
@@ -172,10 +218,11 @@ class Forecaster:
 
             # 🧾 Salvo lo stock residuo
             stock_test.append(current_stock)
-            #
-            # TODO: fake to be erased
-            stock_test1.append((order+ safety_stock)-y_test.iloc[i])
 
+            # 🧮 Stock alternativo: solo ordine + safety - domanda (NON cumulativo)
+            stock_test1.append((order + safety_stock) - demand)
+
+        stock_test1[0] = np.mean(stock_train[-weeks_to_cover:])
 
 
         # ✅ Calcolo livello di servizio
@@ -191,7 +238,7 @@ class Forecaster:
         fig = visualize_forecast_and_safety_stock(product=product_name,
                                                 y_pred_prod=y_pred_test_corrected,
                                                 y=y_test,
-                                                weekly_stock=stock_test1,
+                                                weekly_stock=stock_test,
                                                 safety_stock=np.full_like(y_pred_test, safety_stock),
                                                 required_sell_in=forecast_sell_in_test,
                                                 stock_cover=stock_cover

@@ -184,8 +184,8 @@ def load_weekly_data_with_prices(filepath, product_var='Item', date_column='Sett
     df_sellout['Mese'] = ((df_sellout['Settimana_num'] - 1) // 4) + 1
 
     # === 3. Carica prezzi con MultiIndex (Anno, MESE)
-# Leggi il foglio senza header, così puoi gestire tu l'intestazione
-# Carica senza header per gestire a mano
+    # Leggi il foglio senza header, così puoi gestire tu l'intestazione
+    # Carica senza header per gestire a mano
     df_raw = pd.read_excel(filepath, sheet_name=1, engine='openpyxl', header=None)
 
     # Estrai intestazioni da riga 0 e 1 (colonne da 1 in poi)

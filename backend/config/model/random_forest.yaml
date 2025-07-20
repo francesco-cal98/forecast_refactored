@@ -10,7 +10,7 @@ param_grid:
   max_depth: [15,20,30,50]
   min_samples_leaf: [1,2,3, 5, 7]
   n_estimators: [700,1000,1200]
-  max_features: ["sqrt", "log2","auto"]
+  max_features: ["log2"]
   bootstrap: [True, False]
   min_samples_split: [5,10,20,30]
   criterion: ["absolute_error"]

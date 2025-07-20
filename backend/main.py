@@ -50,7 +50,9 @@ def main(cfg: DictConfig):
     forecaster.gridsearch(
         X_train=dataset.X_train,
         y_train=dataset.y_train,
-        param_grid=cfg.model.param_grid
+        X_val=dataset.X_test,             # <— passo X_test per validare solo su target
+        param_grid=cfg.model.param_grid,
+        scoring='neg_mean_absolute_error' # o la metrica che preferisci
     )
 
     # 4. Predict
@@ -58,7 +60,7 @@ def main(cfg: DictConfig):
     
     
 
-    # 5. Stock analysis
+    # 5. Stock analysisd
     df= forecaster.stock_analysis(
         y_test=dataset.y_test,
         y_pred_test=y_pred,

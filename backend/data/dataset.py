@@ -6,6 +6,8 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import SplineTransformer
 from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import LabelEncoder
+
 
 
 from utils.helper import (
@@ -44,7 +46,6 @@ class SalesDataset:
 
         np.random.seed(42)
 
-          # Load JSON configs
         self.prepare_config = replace_patterns_in_dict(
             prepare_config, 
             {"target": lambda x: target_column,
@@ -95,45 +96,78 @@ class SalesDataset:
             df = self.dataset.copy()
 
         df = self._maybe_downsample(df)
-
+        df["product_id"] = df[self.product_var]
 
         unit = "M" if self.granularity == "monthly" else "W"
+
+        df["week_number"] = df[self.date_column].str.extract(r"W(\d{1,2})")[0].astype(int)
+        df["is_peak_season"] = df["week_number"].between(47, 52).astype(int)
 
         for col, lag in self.prepare_config.get('lag', {}).get(self.granularity, {}).items():
             if isinstance(lag, int): lag = [lag]
             for l in lag:
-                df[f'{col}_{l}{unit}'] = df.groupby(group_columns)[col].shift(l)
+                df[f'{col}_{l}{unit}'] = df.groupby(self.product_var)[col].shift(l)
 
         for col, percentage in self.prepare_config.get('percentage', {}).get(self.granularity, {}).items():
             if isinstance(percentage, int): percentage = [percentage]
             for p in percentage:
-                df[f'{col}_percentage_{p}_{unit}'] = df.groupby(group_columns)[col].pct_change(p).clip(-2, 2).shift(1)
+                df[f'{col}_percentage_{p}_{unit}'] = df.groupby(self.product_var)[col].pct_change(p).clip(-2, 2).shift(1)
 
-        for op, col_window in self.prepare_config.get('rolling', {}).items():
-            for col, w in col_window.get(self.granularity, {}).items():
-                if isinstance(w, int): w = [w]
-                for wi in w:
-                    for g in df[group_columns].drop_duplicates().values:
-                        mask = (df[group_columns] == g).all(axis=1)
-                        df.loc[mask, f'{col}_rolling_{op}_{wi}{unit}'] = df.loc[mask, col].rolling(window=wi, min_periods=1).agg(op).shift(1)
+            for op, col_window in self.prepare_config.get('rolling', {}).items():
+                for col, win_vals in col_window.get(self.granularity, {}).items():
+                    if isinstance(win_vals, int): win_vals = [win_vals]
+                    for w in win_vals:
+                        new_col = f"{col}_rolling_{op}_{w}{unit}"
+                        df[new_col] = (
+                            df
+                            .groupby(self.product_var)[col]
+                            .transform(lambda x: x.rolling(window=w, min_periods=1).agg(op).shift(1))
+                        )
 
-        for col, windows in self.prepare_config.get('trend', {}).get(self.granularity, {}).items():
-            if isinstance(windows, int): windows = [windows]
-            for wi in windows:
-                for g in df[group_columns].drop_duplicates().values:
-                    mask = (df[group_columns] == g).all(axis=1)
-                    df.loc[mask, f"{col}_trend_{wi}{unit}"] = df.loc[mask, col].rolling(window=wi, min_periods=wi).apply(
-                        lambda x: np.polyfit(np.arange(len(x)), x, 1)[0], raw=True
-                    ).shift(1)
+            # Trend
+            for col, trend_vals in self.prepare_config.get('trend', {}).get(self.granularity, {}).items():
+                if isinstance(trend_vals, int): trend_vals = [trend_vals]
+                for w in trend_vals:
+                    new_col = f"{col}_trend_{w}{unit}"
+                    df[new_col] = (
+                        df
+                        .groupby(self.product_var)[col]
+                        .transform(lambda x: x
+                                .rolling(window=w, min_periods=w)
+                                .apply(lambda s: np.polyfit(np.arange(len(s)), s, 1)[0], raw=True)
+                                .shift(1))
+                    )
 
         for promo in [1, 2]:
             promo_col = f'type_promo_{promo}'
             if promo_col in df.columns:
                 df[f'type_promo_{promo}_current'] = df[promo_col]
-                df[f'type_promo_{promo}_{self.nr_horizon}{unit}'] = df.groupby(group_columns)[promo_col].shift(-self.nr_horizon)
+                df[f'type_promo_{promo}_{self.nr_horizon}{unit}'] = df.groupby(self.product_var)[promo_col].shift(-self.nr_horizon)
 
+        # ——————————————————————————————————
+        # 3) Log‐transform delle feature numeriche positive
+        exclude_cols = [
+            self.target_column,
+            "product_id",
+            "week_number",
+            "is_peak_season"
+        ] + [c for c in df.columns if "promo" in c]
+
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        cols_to_log = [
+            c for c in numeric_cols
+            if c not in exclude_cols
+               and df[c].min() >= 0
+        ]
+        for c in cols_to_log:
+            df[c] = np.log1p(df[c])
+
+        # 4) Rimuovi i NaN prodotti da tutte le trasformazioni
         df.dropna(inplace=True)
+        df = df.reset_index(drop=True)
+
         return df
+
 
     def _encode_time(self, X: pd.DataFrame, time_unit='week'):
         if not pd.api.types.is_datetime64_any_dtype(X[self.date_column]):
@@ -158,9 +192,21 @@ class SalesDataset:
     def process_data(self, train_fraction=0.93, train_params: dict[str, Any] = None, product: str | None = None):
         y_col = f'{self.target_column}_{self.nr_horizon}W'
         product_to_use = product or self.product_name
-        df = self._prepare_dataset() if product_to_use is None else self._prepare_dataset(df=self.extract_product_data(product_to_use), group_columns=[self.product_var])
+        df = self._prepare_dataset()  # Passa tutti i prodotti
         df = self._encode_time(X=df, time_unit=self.granularity)
+        
+        # Ordina i prodotti mettendo il target product_to_use per ultimo
+        #products = df[self.product_var].unique().tolist()
 
+        # Rimuovi e metti in fondo
+        #products = [p for p in products if p != product_to_use] + [product_to_use]
+
+        # Crea una categoria ordinata
+        #df[self.product_var] = pd.Categorical(df[self.product_var], categories=products, ordered=True)
+
+        # Ora ordina per prodotto e data
+        #df = df.sort_values(by=[self.product_var, self.date_column]).reset_index(drop=True)
+        
         if train_params['boundary'] is not None:
             boundary = (df[self.date_column] - pd.to_datetime(train_params['boundary'])).abs().argmin()
             boundary_date = df.iloc[boundary][self.date_column]
@@ -172,6 +218,10 @@ class SalesDataset:
         begin_train_date = boundary_date - parse_time_string(train_params['train_len'])
         end_test_date = boundary_date + parse_time_string(train_params['test_len'])
 
+        print("Boundary date:", boundary_date)
+        print("End test date:", end_test_date)
+        print("Unique dates in df:", sorted(df[self.date_column].unique())[:5], "...", sorted(df[self.date_column].unique())[-5:])
+
         sel_cols = select_columns(
             df=df,
             include_prefixes=self.column_selection['prefixes'],
@@ -180,16 +230,17 @@ class SalesDataset:
             exclude_columns=self.column_selection['to_exclude']
         )
 
-        train_mask = (df[self.date_column] >= begin_train_date) & (df[self.date_column] < boundary_date)
-        test_mask = (df[self.date_column] >= boundary_date) & (df[self.date_column] < end_test_date)
+        train_mask = (
+            ((df[self.product_var] == product_to_use) & (df[self.date_column] < boundary_date)) | 
+            (df[self.product_var] != product_to_use)
+        )
 
+        test_mask = (df[self.product_var] == product_to_use) & (df[self.date_column] >= boundary_date) & (df[self.date_column] < end_test_date)
 
-        # TODO ERASE
         self.X_train = df.loc[train_mask].copy()
         self.X_test = df.loc[test_mask].copy()
         self.y_train = self.X_train[y_col]
         self.y_test = self.X_test[y_col]
-
 
         print("Train dates")
         print(self.X_train[self.date_column].head(3))
@@ -201,34 +252,26 @@ class SalesDataset:
 
         df = df[sel_cols]
 
-        self.X_train = df.loc[train_mask].copy()
-        self.X_test = df.loc[test_mask].copy()
-        
+        self.X_train = df.loc[train_mask].copy().reset_index(drop=True)
+        self.X_test = df.loc[test_mask].copy().reset_index(drop=True)
 
-
-
-      
-
-
-        self.y_train = self.X_train[y_col]
+        self.y_train = self.X_train[y_col].reset_index(drop=True)
         self.X_train.drop(y_col, axis=1, inplace=True)
-        self.y_test = self.X_test[y_col]
+        self.y_test = self.X_test[y_col].reset_index(drop=True)
         self.X_test.drop(y_col, axis=1, inplace=True)
         
 
+        # Assumendo che il dataset sia già processato:
+        le = LabelEncoder()
 
-        """
-        self.X_train, self.X_test, self.scaler = normalize_selected_columns(
-            X_train=self.X_train,
-            X_test=self.X_test,
-            include_keywords=["Prezzo", "pct_change", "trend"],
-            scaler_type="robust"
-        )
-        """
-        
+        # Codifica il campo product_id
+        self.X_train["product_id"] = le.fit_transform(self.X_train["product_id"])
+        self.X_test["product_id"] = le.transform(self.X_test["product_id"])
+
 
         print(f"🗕️ Train: {begin_train_date.date()} → {boundary_date.date()} → {len(self.X_train)} rows")
         print(f"🗕️ Test : {boundary_date.date()} → {end_test_date.date()} → {len(self.X_test)} rows")
 
     def get_all_products(self):
         return pd.unique(self.dataset[self.product_var])
+
