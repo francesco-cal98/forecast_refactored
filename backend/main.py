@@ -50,7 +50,7 @@ def main(cfg: DictConfig):
     forecaster.gridsearch(
         X_train=dataset.X_train,
         y_train=dataset.y_train,
-        X_val=dataset.X_test,             # <— passo X_test per validare solo su target
+        X_val=None,             # <— passo X_test per validare solo su target
         param_grid=cfg.model.param_grid,
         scoring='neg_mean_absolute_error' # o la metrica che preferisci
     )

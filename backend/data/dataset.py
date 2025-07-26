@@ -71,6 +71,7 @@ class SalesDataset:
             self.dataset.sort_values(by=date_column, inplace=True)
             self.dataset.reset_index(drop=True, inplace=True)
 
+
     def _maybe_downsample(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.granularity != "monthly":
             return df
@@ -162,8 +163,11 @@ class SalesDataset:
         for c in cols_to_log:
             df[c] = np.log1p(df[c])
 
+        df.fillna(0,inplace=True)
+
+        df.to_excel(r"C:\Users\fraca\forecast_refactored\backend\dataset_before_processing.xlsx")
+
         # 4) Rimuovi i NaN prodotti da tutte le trasformazioni
-        df.dropna(inplace=True)
         df = df.reset_index(drop=True)
 
         return df
@@ -192,36 +196,39 @@ class SalesDataset:
     def process_data(self, train_fraction=0.93, train_params: dict[str, Any] = None, product: str | None = None):
         y_col = f'{self.target_column}_{self.nr_horizon}W'
         product_to_use = product or self.product_name
-        df = self._prepare_dataset()  # Passa tutti i prodotti
+        df = self._prepare_dataset()
         df = self._encode_time(X=df, time_unit=self.granularity)
-        
-        # Ordina i prodotti mettendo il target product_to_use per ultimo
-        #products = df[self.product_var].unique().tolist()
 
-        # Rimuovi e metti in fondo
-        #products = [p for p in products if p != product_to_use] + [product_to_use]
+        # Ordina per prodotto e data
+        df = df.sort_values(by=[self.product_var, self.date_column]).reset_index(drop=True)
 
-        # Crea una categoria ordinata
-        #df[self.product_var] = pd.Categorical(df[self.product_var], categories=products, ordered=True)
-
-        # Ora ordina per prodotto e data
-        #df = df.sort_values(by=[self.product_var, self.date_column]).reset_index(drop=True)
-        
+        # ————— Step 1: Calcolo della boundary sulla serie target
+        target_df = df[df[self.product_var] == product_to_use]
         if train_params['boundary'] is not None:
-            boundary = (df[self.date_column] - pd.to_datetime(train_params['boundary'])).abs().argmin()
-            boundary_date = df.iloc[boundary][self.date_column]
+            boundary = (target_df[self.date_column] - pd.to_datetime(train_params['boundary'])).abs().argmin()
+            boundary_date = target_df.iloc[boundary][self.date_column]
         else:
-            last_date = df[self.date_column].max()
+            last_date = target_df[self.date_column].max()
             boundary_date = last_date - parse_time_string(train_params['test_len'])
-            boundary = (df[self.date_column] - boundary_date).abs().argmin()
 
         begin_train_date = boundary_date - parse_time_string(train_params['train_len'])
         end_test_date = boundary_date + parse_time_string(train_params['test_len'])
 
-        print("Boundary date:", boundary_date)
-        print("End test date:", end_test_date)
-        print("Unique dates in df:", sorted(df[self.date_column].unique())[:5], "...", sorted(df[self.date_column].unique())[-5:])
+        print("📍 Boundary:", boundary_date.date(), "| 🛠️ Train from:", begin_train_date.date(), "| 🧪 Test until:", end_test_date.date())
 
+        # ————— Step 2: Creazione dei mask
+        train_mask = (
+            (df[self.product_var] != product_to_use) |
+            ((df[self.product_var] == product_to_use) & (df[self.date_column] < boundary_date))
+        )
+
+        test_mask = (
+            (df[self.product_var] == product_to_use) &
+            (df[self.date_column] >= boundary_date) &
+            (df[self.date_column] < end_test_date)
+        )
+
+        # ————— Step 3: Selezione delle colonne
         sel_cols = select_columns(
             df=df,
             include_prefixes=self.column_selection['prefixes'],
@@ -230,48 +237,31 @@ class SalesDataset:
             exclude_columns=self.column_selection['to_exclude']
         )
 
-        train_mask = (
-            ((df[self.product_var] == product_to_use) & (df[self.date_column] < boundary_date)) | 
-            (df[self.product_var] != product_to_use)
-        )
-
-        test_mask = (df[self.product_var] == product_to_use) & (df[self.date_column] >= boundary_date) & (df[self.date_column] < end_test_date)
-
-        self.X_train = df.loc[train_mask].copy()
-        self.X_test = df.loc[test_mask].copy()
-        self.y_train = self.X_train[y_col]
-        self.y_test = self.X_test[y_col]
-
-        print("Train dates")
-        print(self.X_train[self.date_column].head(3))
-        print(self.y_train.head(3))
-
-        print("\nTest dates")
-        print(self.X_test[self.date_column].head(3))
-        print(self.y_test.head(3))
-
         df = df[sel_cols]
 
-        self.X_train = df.loc[train_mask].copy().reset_index(drop=True)
-        self.X_test = df.loc[test_mask].copy().reset_index(drop=True)
+        # ————— Step 4: Split dei dati e ordinamento
+        df_train = df.loc[train_mask].copy()
+        df_test = df.loc[test_mask].copy()
 
-        self.y_train = self.X_train[y_col].reset_index(drop=True)
-        self.X_train.drop(y_col, axis=1, inplace=True)
-        self.y_test = self.X_test[y_col].reset_index(drop=True)
-        self.X_test.drop(y_col, axis=1, inplace=True)
-        
+        # Ordina train mettendo prima le altre serie, poi la serie target
+        df_train[self.product_var] = pd.Categorical(df_train[self.product_var], 
+                                                    categories=[p for p in df[self.product_var].unique() if p != product_to_use] + [product_to_use], 
+                                                    ordered=True)
+        df_train = df_train.sort_values(by=[self.product_var]).reset_index(drop=True)
+        #df_test = df_test.sort_values(by=[self.date_column]).reset_index(drop=True)
 
-        # Assumendo che il dataset sia già processato:
+        # ————— Step 5: Split X/y e encoding
+        self.X_train = df_train.drop(columns=[y_col])
+        self.y_train = df_train[y_col].reset_index(drop=True)
+        self.X_test = df_test.drop(columns=[y_col])
+        self.y_test = df_test[y_col].reset_index(drop=True)
+
         le = LabelEncoder()
+        self.X_train["Item"] = le.fit_transform(self.X_train["Item"])
+        self.X_test["Item"] = le.transform(self.X_test["Item"])
 
-        # Codifica il campo product_id
-        self.X_train["product_id"] = le.fit_transform(self.X_train["product_id"])
-        self.X_test["product_id"] = le.transform(self.X_test["product_id"])
-
-
-        print(f"🗕️ Train: {begin_train_date.date()} → {boundary_date.date()} → {len(self.X_train)} rows")
-        print(f"🗕️ Test : {boundary_date.date()} → {end_test_date.date()} → {len(self.X_test)} rows")
-
+        print(f"✅ TRAIN → {len(self.X_train)} rows | TEST → {len(self.X_test)} rows")
+        # Alla fine di _prepare_dataset
     def get_all_products(self):
         return pd.unique(self.dataset[self.product_var])
 

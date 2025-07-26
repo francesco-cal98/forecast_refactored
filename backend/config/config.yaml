@@ -69,7 +69,7 @@ prepare:
 
 column_selection:
   prefixes: ["type", "dispatches", "target", "numeric"]
-  suffixes: ["W", "sin", "cos", "trend", "percentage","season","id"]  # 👈 importante per includere la colonna nel training
+  suffixes: ["W", "sin", "cos", "trend", "percentage","season","Item"]  # 👈 importante per includere la colonna nel training
   
   regex: []
   to_exclude: []
