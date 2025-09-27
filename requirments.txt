@@ -12,3 +12,4 @@ joblib
 pyyaml
 openpyxl
 lightgbm
+mlflow

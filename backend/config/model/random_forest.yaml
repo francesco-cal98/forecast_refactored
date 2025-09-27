@@ -1,10 +1,11 @@
 name: "random_forest"
 
 params:
-  max_depth: 15
-  n_estimators: 100
+  max_depth: 10
+  n_estimators: 900
   min_samples_leaf: 3
   random_state: 42
+  criterion: "absolute_error"
 
 param_grid:
   max_depth: [15,20,30,50]

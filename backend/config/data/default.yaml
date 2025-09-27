@@ -5,3 +5,13 @@ target_column: "Sellout"
 product_column: "product_group"
 nr_horizon: 1
 product_name: "Product_11"
+
+per_series_scaling:
+  enabled: true          # attiva
+  method: zscore         # zscore | robust  (robust = median/MAD)
+  windows: [8, 26]       # settimane per la media/std rolling
+  # cols:                 # opzionale: se omesso, auto-seleziona i lag semplici del target (es. SellOut_1W, 4W, 8W...)
+  #   - SellOut_1W
+  #   - SellOut_4W
+  #   - Prezzo_1W        # esempio: puoi inserire anche prezzo/altre feature se vuoi scalarle
+
