@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import mlflow
 
+from utils.helper import resolve_config_refs,resolve_target_keys
 from utils.metrics import MAPE,WAPE,MASE,SMAPE  # già nel tuo repo
 
 
@@ -86,18 +87,26 @@ class BacktestRunner:
     # ---------- main API ----------
     def run_for_item(self, item: str) -> Dict[str, Any]:
         # 1) Sonda le date disponibili per costruire i cut
+
+        prepare_config = resolve_target_keys(self.cfg)
+
+        # 1) Dataset
+        dataset_cfg = getattr(self.cfg, "data", {})
+        dataset_extra_cfg = getattr(self.cfg, "dataset_config", {})  # opzionale nel tuo YAML
+
+
         ds_probe = self.dataset_cls(
-            csv_file=self.cfg.data.file_path,
-            separator=self.cfg.data.separator,
-            date_column=self.cfg.data.date_column,
-            target_column=self.cfg.data.target_column,
-            nr_horizon=self.cfg.data.nr_horizon,
-            prepare_config=self.cfg.prepare,
+            csv_file=dataset_cfg.file_path,
+            separator=dataset_cfg.separator,
+            date_column=dataset_cfg.date_column,
+            target_column=dataset_cfg.target_column,
+            nr_horizon=dataset_cfg.nr_horizon,
+            prepare_config=prepare_config,
             column_selection=self.cfg.column_selection,
-            product_var=self.cfg.data.product_column,
-            granularity=self.cfg.data.granularity,
+            product_var=dataset_cfg.product_column,
+            granularity=dataset_cfg.granularity,
             product_name=item,
-            config=getattr(self.cfg, "dataset_config", {}) or {},
+            config=dataset_extra_cfg
         )
         df_full = ds_probe._prepare_dataset().sort_values([ds_probe.product_var, ds_probe.date_column])
         df_full = ds_probe._encode_time(df_full, time_unit=ds_probe.granularity)
@@ -111,18 +120,18 @@ class BacktestRunner:
         for cut_idx, cut in enumerate(cuts, start=1):
             # 2) Prepara il dataset per questo cut
             ds = self.dataset_cls(
-                csv_file=self.cfg.data.file_path,
-                separator=self.cfg.data.separator,
-                date_column=self.cfg.data.date_column,
-                target_column=self.cfg.data.target_column,
-                nr_horizon=self.cfg.data.nr_horizon,
-                prepare_config=self.cfg.prepare,
-                column_selection=self.cfg.column_selection,
-                product_var=self.cfg.data.product_column,
-                granularity=self.cfg.data.granularity,
-                product_name=item,
-                config=getattr(self.cfg, "dataset_config", {}) or {},
-            )
+            csv_file=dataset_cfg.file_path,
+            separator=dataset_cfg.separator,
+            date_column=dataset_cfg.date_column,
+            target_column=dataset_cfg.target_column,
+            nr_horizon=dataset_cfg.nr_horizon,
+            prepare_config=prepare_config,
+            column_selection=self.cfg.column_selection,
+            product_var=dataset_cfg.product_column,
+            granularity=dataset_cfg.granularity,
+            product_name=item,
+            config=dataset_extra_cfg
+        )
             ds.process_data(
                 product=item,
                 train_params={

@@ -2,13 +2,13 @@ defaults:
   - model: random_forest
 
 data:
-  file_path: "C:\\Users\\fraca\\forecast_refactored\\TEST DATI SAMPLE.xlsx"
+  file_path: "C:\\Users\\fraca\\forecast_refactored\\History_SellIn_SellOut.csv"
   separator: ";"
-  date_column: "Settimana"
+  date_column: "PERIOD_TAG"
   target_column: "Sellout"
-  product_column: "Item"
+  product_column: "product_group"
   nr_horizon: 1           # <-- POSITIVO: 1 settimana avanti
-  product_name: "CHARLIE"
+  product_name: "Product_01"
   granularity: "weekly"
 
 # Opzioni extra per SalesDataset (nuove)
@@ -26,48 +26,48 @@ prepare:
   lag:
     weekly:
       ${data.target_column}: [1, 3, 4, 5]   # <-- tolto -1 (era futuro)
-      Prezzo: [1, 3, 4, 5]                  # dare sempre anche lag 1 al prezzo
+      #Prezzo: [1, 3, 4, 5]                  # dare sempre anche lag 1 al prezzo
     monthly:
       ${data.target_column}: [1, 2, 3]      # (se userai monthly)
-      Prezzo: [1, 2, 3]
+      #Prezzo: [1, 2, 3]
 
   percentage:
     weekly:
       ${data.target_column}: [2, 3, 4]
-      Prezzo: [4, 8, 12]
+      #Prezzo: [4, 8, 12]
     monthly:
       ${data.target_column}: [1, 2, 3]
-      Prezzo: [1, 2, 3]
+      #Prezzo: [1, 2, 3]
 
   rolling:
     max:
       weekly:
         ${data.target_column}: [2, 3, 5, 10]
-        Prezzo: [3]
+        #Prezzo: [3]
       monthly:
         ${data.target_column}: [1]
-        Prezzo: [1]
+        #Prezzo: [1]
     min:
       weekly:
         ${data.target_column}: [2, 3, 5, 10]
-        Prezzo: [3]
+        #Prezzo: [3]
       monthly:
         ${data.target_column}: [1]
-        Prezzo: [1]
+        #Prezzo: [1]
     std:
       weekly:
         ${data.target_column}: [3, 5]
-        Prezzo: [3, 5]
+        #Prezzo: [3, 5]
       monthly:
         ${data.target_column}: [1]
-        Prezzo: [1]
+        #Prezzo: [1]
     median:
       weekly:
         ${data.target_column}: [5, 10]
-        Prezzo: [10]
+        #Prezzo: [10]
       monthly:
         ${data.target_column}: [1, 2, 3]
-        Prezzo: [1, 2, 3]
+        #Prezzo: [1, 2, 3]
 
   # trend (puoi riattivare se vuoi slope locale della serie)
   # trend:
@@ -86,7 +86,9 @@ column_selection:
     - "percentage"
     - "season"
     - "Settimana"
-    - "Item"        # per includere il product id/categoria se rimane come stringa
+    - "Item"
+    - "product_group"
+    - "PERIOD_TAG"        # per includere il product id/categoria se rimane come stringa
   regex:
     # Market features ammesse
     - "^market_sum_ex_lag\\d+$"
@@ -105,18 +107,19 @@ column_selection:
     - "^Prezzo_\\d+[WM]$"
     - "^product_age_w$"
     - "^${data.target_column}_ema_h\\d+$"     # cattura Sellout_ema_h4, h8, h13, ...
-    - "^price_(gap|rel)_1W$"                  # se usi price_gap_1W / price_rel_1W
+    - "^price_(gap|rel)_1W$"
+    - "(?i).*promo.*"                  # se usi price_gap_1W / price_rel_1W
 
   to_exclude:
     #- "${data.date_column}"          # <— escludi la data grezza
     - "^market_sum_ex$"
     - "^market_mean_ex$"
     # Se NON conosci promo future, escludi eventuali colonne tipo _{h}W:
-    - "^type_promo_\\d+_\\d+[WM]$"
+    #- "^type_promo_\\d+_\\d+[WM]$"
   callables: []
 
 train:
-  train_len: "12m"     # maiuscolo/minuscolo ok, ma standardizza (M mesi, W settimane)
+  train_len: "24m"     # maiuscolo/minuscolo ok, ma standardizza (M mesi, W settimane)
   test_len:  "8w"      # <-- allineato alla CV; prima era 9w
   boundary: "2025-01-20"
 
