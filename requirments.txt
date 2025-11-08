@@ -13,3 +13,4 @@ pyyaml
 openpyxl
 lightgbm
 mlflow
+tenacity

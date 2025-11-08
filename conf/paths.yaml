@@ -1,0 +1,4 @@
+data_dir: data/regulatory
+raw_dir: ${paths.data_dir}/raw
+log_dir: logs/regulatory
+
