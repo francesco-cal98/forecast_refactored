@@ -65,10 +65,13 @@ class Forecaster:
         weights = None
         if dates is not None:
             dates = pd.to_datetime(dates, errors="coerce")
+            # Compute exponential decay weights: recent rows get weight~1, old rows get weight~0
             weights = compute_temporal_sample_weights(dates, strategy="exponential", gamma=recency_gamma)
         try:
-            self.model.fit(X_num, y_train, sample_weight=None)
+            # Fix: pass computed weights instead of hardcoded None
+            self.model.fit(X_num, y_train, sample_weight=weights)
         except TypeError:
+            # SVR does not support sample_weight — fall back silently
             self.model.fit(X_num, y_train)
         self.regressor_names = getattr(self.model, "feature_names_in_", X_num.columns.to_numpy())
 

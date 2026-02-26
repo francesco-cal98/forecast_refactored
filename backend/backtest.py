@@ -147,14 +147,27 @@ class BacktestRunner:
             Xtr_num = ds.X_train.select_dtypes(include=[np.number])
             Xte_num = ds.X_test.select_dtypes(include=[np.number])
 
-            fore.model.fit(Xtr_num, ds.y_train)
+            # Use Forecaster.fit() so temporal sample weights are applied correctly
+            recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
+            fore.fit(
+                Xtr_num,
+                ds.y_train,
+                dates=getattr(ds, "train_dates", None),
+                recency_gamma=recency_gamma,
+            )
 
             # pred test
             yhat_test, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
             # pred train (per stock_analysis)
             yhat_train = fore.model.predict(Xtr_num)
 
-            y_true = np.asarray(ds.y_test)
+            # Inverse-transform from scaled space back to original demand units.
+            # series_scale is set in dataset.process_data(); default 1.0 if scaling disabled.
+            _scale = getattr(ds, "series_scale", 1.0)
+            yhat_test  = yhat_test  * _scale
+            yhat_train = yhat_train * _scale
+
+            y_true = np.asarray(ds.y_test) * _scale
 
             # 4) metriche "classiche"
             metrics = {
@@ -169,9 +182,9 @@ class BacktestRunner:
             os.makedirs(cut_dir, exist_ok=True)
 
             stock_df = fore.stock_analysis(
-                y_test=ds.y_test,
+                y_test=ds.y_test * _scale,
                 y_pred_test=pd.Series(yhat_test, index=ds.y_test.index),
-                y_train=ds.y_train,
+                y_train=ds.y_train * _scale,
                 y_pred_train=pd.Series(yhat_train, index=ds.y_train.index),
                 sell_in_true=ds.X_test.get("orders_SellIn", ds.y_test) if hasattr(ds, "X_test") else None,
                 safety_stock_time=getattr(self.cfg.stock, "safety_stock_window", 4),

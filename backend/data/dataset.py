@@ -215,6 +215,28 @@ class SalesDataset:
             df["is_peak_season"] = 0
 
         # ------------------------
+        # Fourier seasonality features
+        # ------------------------
+        # Standard sin/cos on day-of-year captures only one cycle.
+        # Fourier terms with K harmonics decompose the seasonal signal into K
+        # overlapping cycles simultaneously: annual (k=1), semi-annual (k=2),
+        # quarterly (k=3). This is the highest-ROI calendar feature for weekly data.
+        #
+        # For weekly data: period = 52 weeks.
+        # For monthly data: period = 12 months.
+        _fourier_period = 52.0 if is_weekly else 12.0
+        _fourier_t = df["week_number"].astype(float) if is_weekly else df[self.date_column].dt.month.astype(float)
+        _fourier_K = 3  # 3 harmonics: annual + semi-annual + quarterly cycles
+        for k in range(1, _fourier_K + 1):
+            df[f"fourier_sin_k{k}"] = np.sin(2 * np.pi * k * _fourier_t / _fourier_period)
+            df[f"fourier_cos_k{k}"] = np.cos(2 * np.pi * k * _fourier_t / _fourier_period)
+
+        # Also add month and quarter as explicit integer features —
+        # tree models can use these directly as split points (complement to Fourier)
+        df["month"] = df[self.date_column].dt.month
+        df["quarter"] = df[self.date_column].dt.quarter
+
+        # ------------------------
         # LAG features
         # ------------------------
         for col, lag in self.prepare_config.get("lag", {}).get(self.granularity, {}).items():
@@ -454,7 +476,7 @@ class SalesDataset:
 
         # Split
         df_train = df.loc[train_mask].copy()
-        df_test = df.loc[test_mask].copy()
+        df_test  = df.loc[test_mask].copy()
 
         # Optional: order train with other series first, then target (not strictly needed)
         df_train[self.product_var] = pd.Categorical(
@@ -476,7 +498,31 @@ class SalesDataset:
         self.X_train = df_train.drop(columns=drop_cols).reset_index(drop=True)
         self.y_train = df_train[y_col].reset_index(drop=True)
         self.X_test  = df_test.drop(columns=drop_cols).reset_index(drop=True)
-        self.y_test  = df_test[y_col].reset_index(drop=True)        # Label-encode product columns consistently (prefer product_id if present)
+        self.y_test  = df_test[y_col].reset_index(drop=True)
+
+        # ── Per-series mean scaling ───────────────────────────────────────────
+        # Scale the target by the median demand of the TARGET PRODUCT in the
+        # training window. This prevents high-volume series from dominating
+        # gradient updates in a global model, and makes all series live on a
+        # comparable scale (important for Tweedie loss calibration).
+        #
+        # We use median (not mean) because retail demand has right-skewed
+        # distributions with promo spikes that would inflate the mean.
+        # Fallback to 1.0 if the training target is all-zero (new product).
+        #
+        # The scale is stored on self.series_scale so backtest.py can
+        # inverse-transform predictions back to the original units before
+        # computing metrics and stock analysis.
+        _target_train_values = df_train.loc[
+            df_train[self.product_var] == product_to_use, y_col
+        ]
+        _median = float(_target_train_values.median())
+        self.series_scale = _median if _median > 0 else 1.0
+
+        self.y_train = self.y_train / self.series_scale
+        self.y_test  = self.y_test  / self.series_scale
+
+        # Label-encode product columns consistently (prefer product_id if present)
         # Label-encode robusto (fit su train+test)
         le = LabelEncoder()
         col_cat = "product_id" if "product_id" in self.X_train.columns else self.product_var
