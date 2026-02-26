@@ -5,16 +5,20 @@ import sys
 from pathlib import Path
 
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from .cellar_sparql import fetch_all
 from .io_utils import ensure_dirs, get_logger, safe_to_parquet
 
 
-@hydra.main(config_path="../../../../conf", config_name="regulatory/ingest.yaml", version_base="1.3")
+CONFIG_DIR = str(Path(__file__).resolve().parents[4] / "conf")
+
+
+@hydra.main(config_path=CONFIG_DIR, config_name="regulatory/ingest", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     logger = get_logger("regulatory.ingest", cfg.get("log_level", "INFO"))
     logger.info("Starting regulatory ingestion")
+    logger.info(f"Config keys: {list(cfg.keys())}")
 
     # Resolve paths from config
     raw_dir = cfg.paths.raw_dir
@@ -58,4 +62,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-

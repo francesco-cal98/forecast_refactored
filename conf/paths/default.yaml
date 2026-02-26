@@ -1,0 +1,9 @@
+# @package paths
+data_dir: data/regulatory
+raw_dir: ${paths.data_dir}/raw
+enriched_dir: ${paths.data_dir}/enriched
+processed_dir: ${paths.data_dir}/processed
+annotation_dir: ${paths.data_dir}/annotation
+finetuning_dir: ${paths.data_dir}/finetuning
+cache_dir: ${paths.data_dir}/cache
+log_dir: logs/regulatory

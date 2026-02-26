@@ -95,30 +95,38 @@ def build_query(
     """
     topic_filter = _build_topic_filter(query_terms, eurovoc_uris)
 
-    # Base query adapted from the provided template. We omit ?item resolution here;
-    # downstream links are derived from CELEX when available.
+    # Build language URI from language code (e.g., "ENG" -> full URI)
+    lang_uri = f"<http://publications.europa.eu/resource/authority/language/{language}>"
+
+    # Base query using working examples from CELLAR documentation
+    # Reference: https://sites.google.com/site/dinhbaduy/cellar/sparql-queries-against-cellar-endpoint
     query = f"""
 {PREFIXES}
 
-SELECT DISTINCT ?work ?celex ?title ?abstract ?date ?rtype ?eurovoc ?lang
+SELECT DISTINCT ?work ?celex ?title ?abstract ?date ?rtype ?eurovoc
 WHERE {{
-  ?work a cdm:legal-resource .
-  ?work cdm:work_date_document ?date .
-  OPTIONAL {{ ?work owl:sameAs ?celex . FILTER(CONTAINS(STR(?celex), "resource/celex/")) }}
-  OPTIONAL {{
+    ?work a cdm:resource_legal .
+    ?work cdm:work_date_document ?date .
+
+    # Expression in requested language (REQUIRED - uses full language URI)
     ?expr cdm:expression_belongs_to_work ?work ;
-          cdm:expression_uses_language ?langRes ;
+          cdm:expression_uses_language {lang_uri} ;
           cdm:expression_title ?title .
+
+    # Abstract is still optional within the language-specific expression
     OPTIONAL {{ ?expr dcterms:abstract ?abstract . }}
-    ?langRes dc:identifier ?lang .
-    FILTER(STR(?lang) = {json.dumps(language)})
-  }}
-  OPTIONAL {{ ?work cdm:resource_legal_type ?rtype . }}
-  OPTIONAL {{ ?work cdm:subject-matter ?eurovoc . }}
 
-  FILTER ( ?date >= {json.dumps(date_from)}^^xsd:date && ?date <= {json.dumps(date_to)}^^xsd:date )
+    # CELEX, type, eurovoc remain optional
+    OPTIONAL {{
+      ?work owl:sameAs ?celex .
+      FILTER(CONTAINS(STR(?celex), "resource/celex/"))
+    }}
+    OPTIONAL {{ ?work cdm:resource_legal_type ?rtype . }}
+    OPTIONAL {{ ?work cdm:subject-matter ?eurovoc . }}
 
-  {topic_filter}
+    FILTER ( ?date >= {json.dumps(date_from)}^^xsd:date && ?date <= {json.dumps(date_to)}^^xsd:date )
+
+    {topic_filter}
 }}
 ORDER BY DESC(?date)
 LIMIT {int(limit)}
@@ -143,7 +151,7 @@ def _bindings_to_rows(bindings: list[dict]) -> list[dict]:
                 "date": g("date"),
                 "rtype": g("rtype"),
                 "eurovoc": g("eurovoc"),
-                "lang": g("lang"),
+                # lang removed - language is specified in query filter, not retrieved dynamically
             }
         )
     return rows
@@ -170,7 +178,7 @@ def run_page(endpoint: str, query: str, timeout_s: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize(df: pd.DataFrame, language: Optional[str] = None) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(
             columns=[
@@ -207,7 +215,6 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         "date": lambda s: first_non_null(s),
         "rtype": lambda s: first_non_null(s),
         "eurovoc": lambda s: join_semicolon([v for v in s if isinstance(v, str) and v]),
-        "lang": lambda s: first_non_null(s),
     }
 
     df = df.groupby("work", as_index=False).agg(agg)
@@ -215,10 +222,13 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Extract CELEX code
     df["celex"] = df["celex_uri"].map(extract_celex_from_uri)
 
-    # Derive links
-    links = df.apply(lambda r: eurlex_links_from_celex(r.get("celex"), r.get("lang")), axis=1)
+    # Derive links (language is None - links will default to EN in eurlex_links_from_celex)
+    links = df.apply(lambda r: eurlex_links_from_celex(r.get("celex"), None), axis=1)
     df["link_html"] = [t[0] for t in links]
     df["link_pdf"] = [t[1] for t in links]
+
+    # Add language column (use provided language code or None)
+    df["language"] = language if language else None
 
     # Rename columns to target schema
     df = df.rename(
@@ -226,7 +236,6 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             "work": "work_uri",
             "date": "date_document",
             "rtype": "resource_type",
-            "lang": "language",
         }
     )
 
@@ -264,6 +273,7 @@ def fetch_all(
     Retries transient HTTP errors with exponential backoff.
     """
     all_pages: list[pd.DataFrame] = []
+    requested_language = language  # Store for later use in normalization
     for page in range(max_pages):
         offset = page * page_size
         q = build_query(
@@ -307,9 +317,9 @@ def fetch_all(
             break
 
     if not all_pages:
-        return _normalize(pd.DataFrame())
+        return _normalize(pd.DataFrame(), language=requested_language)
 
     concatenated = pd.concat(all_pages, ignore_index=True)
-    result = _normalize(concatenated)
+    result = _normalize(concatenated, language=requested_language)
     return result
 

@@ -1,0 +1,30 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - _self_
+
+# Input: metadata parquet from CELLAR ingestion
+input_file: "${paths.raw_dir}/cellar_20260105_094309.parquet"  # Latest file
+
+# Output: enriched parquet with full text
+output_file: "${paths.data_dir}/enriched/documents_with_text_${now:%Y%m%d_%H%M%S}.parquet"
+
+# Text fetching config
+link_column: "link_html"      # Column with EUR-Lex URLs
+text_column: "full_text"      # Column name for extracted text
+
+# Caching
+cache_dir: "${paths.data_dir}/cache"  # Cache downloaded HTML/text
+use_cache: true                       # Reuse cached texts
+
+# Rate limiting
+rate_limit_delay: 1.0  # Seconds between requests (be respectful!)
+timeout: 30            # Request timeout in seconds
+retries: 3             # Number of retry attempts
+
+# Testing
+max_docs: null  # Set to number (e.g., 10) for testing, null for all
+
+# Logging
+log_level: "INFO"  # DEBUG for verbose output

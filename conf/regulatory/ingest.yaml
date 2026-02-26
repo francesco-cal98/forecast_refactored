@@ -1,6 +1,9 @@
+# @package _global_
+
 defaults:
-  - paths
-  - regulatory/sources: cellar
+  - /paths: default
+  - /regulatory/sources: cellar
+  - _self_
 
 source: cellar  # or eurlex_soap
 
@@ -16,4 +19,3 @@ max_pages: 50
 
 outfile: "${paths.raw_dir}/cellar_${now:%Y%m%d}_${now:%H%M%S}.parquet"
 log_level: "INFO"
-
