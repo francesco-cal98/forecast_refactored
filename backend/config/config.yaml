@@ -1,15 +1,9 @@
 defaults:
   - model: random_forest
-
-data:
-  file_path: "C:\\Users\\fraca\\forecast_refactored\\History_SellIn_SellOut.csv"
-  separator: ";"
-  date_column: "PERIOD_TAG"
-  target_column: "Sellout"
-  product_column: "product_group"
-  nr_horizon: 1           # <-- POSITIVO: 1 settimana avanti
-  product_name: "Product_01"
-  granularity: "weekly"
+  # Switch data source here — no other changes needed:
+  #   xlsx_sample  → TEST DATI SAMPLE.xlsx  (products: ALPHA, BETA, DELTA, CHARLIE)
+  #   csv_history  → History_SellIn_SellOut.csv
+  - data: xlsx_sample
 
 # Opzioni extra per SalesDataset (nuove)
 dataset_config:
@@ -130,13 +124,16 @@ column_selection:
   callables: []
 
 train:
-  train_len: "24m"     # maiuscolo/minuscolo ok, ma standardizza (M mesi, W settimane)
-  test_len:  "8w"      # <-- allineato alla CV; prima era 9w
-  boundary: "2025-01-20"
+  # For xlsx_sample: data spans W1 2024 → W21 2025 (~72 weeks total).
+  # train_len capped at 52w so there is enough room for 2 cuts of 8w each.
+  # For csv_history: restore to "24m" via CLI: train.train_len="24m" train.test_len="8w"
+  train_len: "52w"
+  test_len:  "8w"
+  boundary: "2025-03-01"
 
 cv:
-  n_folds: 3
-  val_len: "8w"        # uguale a test_len
+  n_folds: 2            # 2 cuts fits comfortably in 72 weeks; use 3 for longer CSV data
+  val_len: "8w"
   scoring: "neg_mean_absolute_error"
   recency_gamma: 0.08
 
@@ -152,5 +149,5 @@ mlflow:
 
 backtest:
   enabled: true
-  n_cuts: 3
+  n_cuts: 2             # matches cv.n_folds; increase to 3 when using csv_history (longer data)
   output_dir: "outputs/backtest"
