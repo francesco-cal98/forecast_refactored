@@ -176,8 +176,11 @@ class SalesDataset:
                 .transform(lambda x: x.rolling(w, min_periods=w).apply(_slope, raw=True).shift(1))
             )
 
-        # Optional informational ratio (not to be used with future info)
-        df["market_share"] = df[base_col] / df["market_sum"].replace(0, np.nan)
+        # Lagged market share to avoid contemporaneous leakage at inference time.
+        df["market_share"] = (
+            df.groupby(self.product_var)[base_col].shift(1)
+            / df.groupby(self.product_var)["market_sum"].shift(1).replace(0, np.nan)
+        )
 
         return df
 
@@ -213,6 +216,28 @@ class SalesDataset:
         else:
             df["week_number"] = 0
             df["is_peak_season"] = 0
+
+        # ------------------------
+        # Fourier seasonality features
+        # ------------------------
+        # Standard sin/cos on day-of-year captures only one cycle.
+        # Fourier terms with K harmonics decompose the seasonal signal into K
+        # overlapping cycles simultaneously: annual (k=1), semi-annual (k=2),
+        # quarterly (k=3). This is the highest-ROI calendar feature for weekly data.
+        #
+        # For weekly data: period = 52 weeks.
+        # For monthly data: period = 12 months.
+        _fourier_period = 52.0 if is_weekly else 12.0
+        _fourier_t = df["week_number"].astype(float) if is_weekly else df[self.date_column].dt.month.astype(float)
+        _fourier_K = 3  # 3 harmonics: annual + semi-annual + quarterly cycles
+        for k in range(1, _fourier_K + 1):
+            df[f"fourier_sin_k{k}"] = np.sin(2 * np.pi * k * _fourier_t / _fourier_period)
+            df[f"fourier_cos_k{k}"] = np.cos(2 * np.pi * k * _fourier_t / _fourier_period)
+
+        # Also add month and quarter as explicit integer features —
+        # tree models can use these directly as split points (complement to Fourier)
+        df["month"] = df[self.date_column].dt.month
+        df["quarter"] = df[self.date_column].dt.quarter
 
         # ------------------------
         # LAG features
@@ -329,6 +354,18 @@ class SalesDataset:
         df[y_col] = df.groupby(self.product_var)[self.target_column].shift(-self.pred_h)
 
         # ------------------------
+        # Add market-level features (cross-series)
+        # ------------------------
+        # Build them before log-transform so these features are transformed
+        # consistently with the rest of the positive demand-derived covariates.
+        df = self._add_market_features(
+            df,
+            base_col=self.target_column,
+            lags=tuple(self.config.get("market_lags", (1, 4, 8, 12))),
+            trend_windows=tuple(self.config.get("market_trend_windows", (4, 8))),
+        )
+
+        # ------------------------
         # Log-transform POSITIVE features only (never y_col)
         # ------------------------
         exclude_cols = [
@@ -348,19 +385,9 @@ class SalesDataset:
         for c in cols_to_log:
             df[c] = np.log1p(df[c])
 
-        # ------------------------
-        # Add market-level features (cross-series)
-        # ------------------------
-        df = self._add_market_features(
-            df,
-            base_col=self.target_column,
-            lags=tuple(self.config.get("market_lags", (1, 4, 8, 12))),
-            trend_windows=tuple(self.config.get("market_trend_windows", (4, 8))),
-        )
-
         # Final cleanup
         df = df.reset_index(drop=True)
-        df.fillna(0, inplace=True)
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
         if self.debug_save:
             try:
@@ -384,6 +411,32 @@ class SalesDataset:
         X[f"{self.date_column}_sin"] = np.sin(2 * np.pi * day_of_year / max_val)
         X[f"{self.date_column}_cos"] = np.cos(2 * np.pi * day_of_year / max_val)
         return X
+
+    @staticmethod
+    def _compute_intermittency_metrics(y: pd.Series) -> dict[str, float]:
+        """Compute standard intermittency descriptors for one series."""
+        arr = np.asarray(y, dtype=float)
+        if arr.size == 0:
+            return {"sparsity_ratio": 1.0, "adi": 1.0, "cv2": 0.0}
+
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        n = float(arr.size)
+        pos = arr > 0.0
+        n_pos = float(pos.sum())
+        sparsity_ratio = 1.0 - (n_pos / n)
+
+        if n_pos <= 0:
+            return {"sparsity_ratio": float(sparsity_ratio), "adi": float(n), "cv2": 0.0}
+
+        adi = n / n_pos
+        pos_vals = arr[pos]
+        mean_pos = float(np.mean(pos_vals))
+        if pos_vals.size >= 2 and mean_pos > 1e-12:
+            cv = float(np.std(pos_vals, ddof=1) / mean_pos)
+            cv2 = cv * cv
+        else:
+            cv2 = 0.0
+        return {"sparsity_ratio": float(sparsity_ratio), "adi": float(adi), "cv2": float(cv2)}
 
     # -----------------------------
     # Public API used by your training code
@@ -419,12 +472,41 @@ class SalesDataset:
         end_test_date = boundary_date + parse_time_string(train_params.get("test_len")) if train_params else boundary_date + pd.Timedelta(weeks=8)
 
         print(
-            "📍 Boundary:", boundary_date.date(),
-            "| 🛠️ Train from:", begin_train_date.date(),
-            "| 🧪 Test until:", end_test_date.date(),
+            f"[process_data] boundary={boundary_date.date()}"
+            f"  train_from={begin_train_date.date()}"
+            f"  test_until={end_test_date.date()}"
         )
 
-        # Masks: TRAIN = all other series + past of target; TEST = future of target only
+        # Per-series intermittency profile computed on TRAIN window only.
+        profile_rows = []
+        for pid, g in df.groupby(self.product_var, sort=False):
+            hist = g.loc[
+                (g[self.date_column] >= begin_train_date) & (g[self.date_column] < boundary_date),
+                self.target_column,
+            ]
+            if hist.empty:
+                hist = g.loc[g[self.date_column] < boundary_date, self.target_column]
+            met = self._compute_intermittency_metrics(hist)
+            profile_rows.append({self.product_var: pid, **met})
+        profile_df = pd.DataFrame(profile_rows)
+        df = df.merge(profile_df, on=self.product_var, how="left")
+        self.series_profiles = {
+            str(r[self.product_var]): {
+                "sparsity_ratio": float(r["sparsity_ratio"]),
+                "adi": float(r["adi"]),
+                "cv2": float(r["cv2"]),
+            }
+            for _, r in profile_df.iterrows()
+        }
+        self.target_series_profile = self.series_profiles.get(str(product_to_use), {})
+
+        # Masks: TRAIN = all other products (any date) + target product past only.
+        # Non-target products are included without a date cutoff because their lag
+        # features are computed per-group (shift within product) so a row at date t
+        # for product B only sees B's own history up to t-1. Market features are also
+        # lagged (market_sum_ex_lag1 etc.), so no contemporaneous cross-target leakage.
+        # Including all dates for other products gives the global model more seasonal
+        # pattern examples at the test-period timing — empirically verified to help.
         train_mask = (
             (df[self.product_var] != product_to_use)
             | (
@@ -450,42 +532,71 @@ class SalesDataset:
         )
         if y_col not in sel_cols:
             sel_cols.append(y_col)
+        for intermittent_col in ("sparsity_ratio", "adi", "cv2"):
+            if intermittent_col in df.columns and intermittent_col not in sel_cols:
+                sel_cols.append(intermittent_col)
         df = df[sel_cols]
 
         # Split
         df_train = df.loc[train_mask].copy()
-        df_test = df.loc[test_mask].copy()
+        df_test  = df.loc[test_mask].copy()
+        df_train = df_train[df_train[y_col].notna()].copy()
+        df_test = df_test[df_test[y_col].notna()].copy()
 
-        # Optional: order train with other series first, then target (not strictly needed)
-        df_train[self.product_var] = pd.Categorical(
-            df_train[self.product_var],
-            categories=[p for p in df[self.product_var].unique() if p != product_to_use] + [product_to_use],
-            ordered=True,
-        )
-        # Ordina e indicizza pulito
-        # Split ordinati (come già fai)
-        df_train = df.loc[train_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
-        df_test  = df.loc[test_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
+        # Sort each split chronologically within each product
+        df_train = df_train.sort_values([self.product_var, self.date_column]).reset_index(drop=True)
+        df_test  = df_test.sort_values([self.product_var, self.date_column]).reset_index(drop=True)
 
-        # Salva meta-info temporali per i pesi (stesso indice di X/y)
+        # Store raw dates separately (used by Forecaster.fit() for sample weight computation)
         self.train_dates = df_train[self.date_column].reset_index(drop=True)
         self.test_dates  = df_test[self.date_column].reset_index(drop=True)
 
-        # Costruisci X/y ed ESCLUDI la data grezza
+        # Build X and y, dropping the target column and raw date from features
         drop_cols = [y_col, self.date_column]
         self.X_train = df_train.drop(columns=drop_cols).reset_index(drop=True)
         self.y_train = df_train[y_col].reset_index(drop=True)
         self.X_test  = df_test.drop(columns=drop_cols).reset_index(drop=True)
-        self.y_test  = df_test[y_col].reset_index(drop=True)        # Label-encode product columns consistently (prefer product_id if present)
-        # Label-encode robusto (fit su train+test)
+        self.y_test  = df_test[y_col].reset_index(drop=True)
+        self.train_is_target = (
+            df_train[self.product_var].astype(str).reset_index(drop=True) == str(product_to_use)
+        )
+
+        # ── Per-series mean scaling ───────────────────────────────────────────
+        # Scale the target by the median demand of the TARGET PRODUCT in the
+        # training window. This prevents high-volume series from dominating
+        # gradient updates in a global model, and makes all series live on a
+        # comparable scale (important for Tweedie loss calibration).
+        #
+        # We use median (not mean) because retail demand has right-skewed
+        # distributions with promo spikes that would inflate the mean.
+        # Fallback to 1.0 if the training target is all-zero (new product).
+        #
+        # The scale is stored on self.series_scale so backtest.py can
+        # inverse-transform predictions back to the original units before
+        # computing metrics and stock analysis.
+        _target_train_values = df_train.loc[
+            df_train[self.product_var] == product_to_use, y_col
+        ]
+        _median = float(_target_train_values.median())
+        self.series_scale = _median if _median > 0 else 1.0
+
+        self.y_train = self.y_train / self.series_scale
+        self.y_test  = self.y_test  / self.series_scale
+
+        # --- Label-encode the product column ---
+        # Fit on train+test together so both sets share the same integer mapping.
+        # Then one-hot encode: gives tree models an explicit per-series signal.
         le = LabelEncoder()
         col_cat = "product_id" if "product_id" in self.X_train.columns else self.product_var
-        all_labels = pd.concat([self.X_train[col_cat], self.X_test[col_cat]], ignore_index=True).astype(str).unique()
+        all_labels = pd.concat(
+            [self.X_train[col_cat], self.X_test[col_cat]], ignore_index=True
+        ).astype(str).unique()
         le.fit(all_labels)
         self.X_train[col_cat] = le.transform(self.X_train[col_cat].astype(str))
         self.X_test[col_cat]  = le.transform(self.X_test[col_cat].astype(str))
 
-        # One-hot del prodotto (aiuta gli alberi a “capire” la serie)
+        # One-hot encode: align() ensures train and test have identical dummy
+        # columns even if a product appears only in one split
         self.X_train[col_cat] = pd.Categorical(self.X_train[col_cat], categories=range(len(le.classes_)))
         self.X_test[col_cat]  = pd.Categorical(self.X_test[col_cat],  categories=range(len(le.classes_)))
         train_dum = pd.get_dummies(self.X_train[col_cat], prefix=f"{col_cat}_oh", dtype=int)
@@ -495,13 +606,12 @@ class SalesDataset:
         self.X_test  = pd.concat([self.X_test,  test_dum],  axis=1)
 
         self.product_label_encoder = le
+
+        # Safety check: test set must contain only the target product
         test_items = df_test[self.product_var].astype(str).unique()
-        print(f"[DEBUG] Prodotti presenti nel TEST: {list(test_items)}")
+        print(f"[process_data] test products: {list(test_items)}")
         assert len(test_items) == 1 and test_items[0] == str(product_to_use), \
-        "Il TEST deve contenere SOLO la serie target attesa."
-
-
-        
+            f"TEST must contain only '{product_to_use}', found: {list(test_items)}"
 
 
     # Convenience

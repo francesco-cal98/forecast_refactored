@@ -1,15 +1,9 @@
 defaults:
   - model: random_forest
-
-data:
-  file_path: "C:\\Users\\fraca\\forecast_refactored\\History_SellIn_SellOut.csv"
-  separator: ";"
-  date_column: "PERIOD_TAG"
-  target_column: "Sellout"
-  product_column: "product_group"
-  nr_horizon: 1           # <-- POSITIVO: 1 settimana avanti
-  product_name: "Product_01"
-  granularity: "weekly"
+  # Switch data source here — no other changes needed:
+  #   xlsx_sample  → TEST DATI SAMPLE.xlsx  (products: ALPHA, BETA, DELTA, CHARLIE)
+  #   csv_history  → History_SellIn_SellOut.csv
+  - data: xlsx_sample
 
 # Opzioni extra per SalesDataset (nuove)
 dataset_config:
@@ -25,18 +19,25 @@ dataset_config:
 prepare:
   lag:
     weekly:
-      ${data.target_column}: [1, 3, 4, 5]   # <-- tolto -1 (era futuro)
-      #Prezzo: [1, 3, 4, 5]                  # dare sempre anche lag 1 al prezzo
+      # Short-horizon momentum lags (1-5 weeks)
+      # + lag-26: 6-month seasonal anchor (half-year cycle, robust for series < 52 weeks)
+      # + lag-52: same-week-last-year anchor (strongest seasonal signal for mature products)
+      # Note: lag-52 requires at least 52 weeks of history; dataset.py fills NaN with 0
+      # for new products so it is safe to include unconditionally.
+      ${data.target_column}: [1, 2, 3, 4, 5, 26, 52]
+      #Prezzo: [1, 3, 4, 5]
     monthly:
-      ${data.target_column}: [1, 2, 3]      # (se userai monthly)
+      ${data.target_column}: [1, 2, 3, 6, 12]
       #Prezzo: [1, 2, 3]
 
   percentage:
     weekly:
-      ${data.target_column}: [2, 3, 4]
+      # [2,3,4]: short-term momentum
+      # 52: year-over-year growth rate — strongest seasonal context signal
+      ${data.target_column}: [2, 3, 4, 52]
       #Prezzo: [4, 8, 12]
     monthly:
-      ${data.target_column}: [1, 2, 3]
+      ${data.target_column}: [1, 2, 3, 12]
       #Prezzo: [1, 2, 3]
 
   rolling:
@@ -96,9 +97,13 @@ column_selection:
     - "^market_trend_ex_w\\d+$"
     # Rolling generiche (se hai naming tipo *_rolling_op_\\d+[WM])
     - "_rolling_.*_\\d+[WM]$"
-    # Week/calandario
+    # Week/calendario
     - "week_number$"
     - "is_peak_season$"
+    - "^month$"
+    - "^quarter$"
+    # Fourier seasonality (k=1..K harmonics for annual/semi-annual/quarterly cycles)
+    - "^fourier_(sin|cos)_k\\d+$"
     # Tempo codificato (se i nomi sono diversi)
     - f"{data.date_column}_sin$"
     - f"{data.date_column}_cos$"
@@ -119,13 +124,20 @@ column_selection:
   callables: []
 
 train:
-  train_len: "24m"     # maiuscolo/minuscolo ok, ma standardizza (M mesi, W settimane)
-  test_len:  "8w"      # <-- allineato alla CV; prima era 9w
-  boundary: "2025-01-20"
+  # For xlsx_sample: data spans W1 2024 → W21 2025 (~72 weeks total).
+  # train_len capped at 52w so there is enough room for 2 cuts of 8w each.
+  # For csv_history: restore to "24m" via CLI: train.train_len="24m" train.test_len="8w"
+  train_len: "52w"
+  test_len:  "8w"
+  boundary: "2025-03-01"
+  intermittency_threshold: 0.4   # route sparse SKUs to Croston-SBA
+  intermittency_adi_threshold: 1.32
+  intermittency_cv2_threshold: 0.49
+  croston_alpha: 0.8
 
 cv:
-  n_folds: 3
-  val_len: "8w"        # uguale a test_len
+  n_folds: 2            # 2 cuts fits comfortably in 72 weeks; use 3 for longer CSV data
+  val_len: "8w"
   scoring: "neg_mean_absolute_error"
   recency_gamma: 0.08
 
@@ -141,5 +153,7 @@ mlflow:
 
 backtest:
   enabled: true
-  n_cuts: 3
+  n_cuts: 2             # matches cv.n_folds; increase to 3 when using csv_history (longer data)
   output_dir: "outputs/backtest"
+
+

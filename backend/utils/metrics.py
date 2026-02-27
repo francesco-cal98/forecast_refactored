@@ -1,5 +1,5 @@
 # =============================================
-# 📦 Inventory Forecasting Utility Functions
+# Inventory Forecasting Utility Functions
 # =============================================
 
 import numpy as np
@@ -8,7 +8,7 @@ from scipy import stats
 from sklearn.metrics import mean_squared_error
 
 # ---------------------------------------------
-# 🎯 Demand Planning Accuracy (DPA)
+# Demand Planning Accuracy (DPA)
 # ---------------------------------------------
 def DPA(y_true, y_pred):
     """
@@ -19,7 +19,7 @@ def DPA(y_true, y_pred):
     return dpa
 
 # ---------------------------------------------
-# ⚖️ Forecast Bias
+# Forecast Bias
 # ---------------------------------------------
 def BIAS(y_true, y_pred):
     """
@@ -30,7 +30,7 @@ def BIAS(y_true, y_pred):
     return bias
 
 # ---------------------------------------------
-# 📉 Root Mean Squared Error
+# Root Mean Squared Error
 # ---------------------------------------------
 def RMSE(y_true, y_pred):
     """
@@ -41,7 +41,7 @@ def RMSE(y_true, y_pred):
     return rmse
 
 # ---------------------------------------------
-# 📊 Mean Absolute Percentage Error
+# Mean Absolute Percentage Error
 # ---------------------------------------------
 def MAPE(y_true, y_pred):
     """
@@ -53,7 +53,7 @@ def MAPE(y_true, y_pred):
     return np.mean(np.abs((y_true[mask] - y_pred[mask]) / (y_true[mask] + 1e-10))) * 100
 
 # ---------------------------------------------
-# 🚫 Lost Sales Calculation (Simple)
+# Lost Sales Calculation (Simple)
 # ---------------------------------------------
 def calculate_lost_sales(y_pred, sellout):
     """
@@ -64,7 +64,7 @@ def calculate_lost_sales(y_pred, sellout):
     return np.maximum(lost_sales, 0)  # Clamp negatives to zero
 
 # ---------------------------------------------
-# 🚫 Lost Sales with Inventory Tracking
+# Lost Sales with Inventory Tracking
 # ---------------------------------------------
 def calculate_lost_sales_with_stock(y_pred, sellout, initial_stock, sell_in):
     """
@@ -94,7 +94,11 @@ def calculate_lost_sales_with_stock(y_pred, sellout, initial_stock, sell_in):
 
 def WAPE(y, yhat):
     y, yhat = np.asarray(y), np.asarray(yhat)
-    denom = np.sum(np.abs(y)) + 1e-8
+    denom = np.sum(np.abs(y))
+    # If the test window is all-zero (intermittent / discontinued product),
+    # WAPE is undefined — return NaN so downstream callers can skip it cleanly.
+    if denom < 1.0:
+        return float("nan")
     return 100.0 * np.sum(np.abs(y - yhat)) / denom
 
 def SMAPE(y, yhat):
@@ -106,11 +110,14 @@ def MASE(y, yhat, y_insample=None, m=1):
     # se non passi y_insample, approssima con y stessa (non ideale ma ok per backtest semplice)
     if y_insample is None or len(y_insample) < m + 1:
         y_insample = y
-    d = np.mean(np.abs(y_insample[m:] - y_insample[:-m])) + 1e-8
+    d = np.mean(np.abs(np.asarray(y_insample)[m:] - np.asarray(y_insample)[:-m]))
+    # If the reference series is flat (d ≈ 0), MASE is undefined.
+    if d < 1.0:
+        return float("nan")
     return np.mean(np.abs(np.asarray(y) - np.asarray(yhat))) / d
 
 # ---------------------------------------------
-# 📈 Service Level
+# Service Level
 # ---------------------------------------------
 def calculate_service_level(sellout, lost_sales):
     """
@@ -120,7 +127,7 @@ def calculate_service_level(sellout, lost_sales):
     return (sellout / (sellout + lost_sales)) * 100
 
 # ---------------------------------------------
-# 📦 Weekly Inventory & Stock Cover
+# Weekly Inventory & Stock Cover
 # ---------------------------------------------
 def calculate_weekly_stock_and_cover(sell_in, sell_out):
     """
@@ -180,7 +187,7 @@ def calculate_weekly_stock_and_cover(sell_in, sell_out):
     return stock, stock_cover
 
 # ---------------------------------------------
-# 🛡️ Safety Stock Calculation
+# Safety Stock Calculation
 # ---------------------------------------------
 def calculate_safety_stock(sellout_history, sell_in_history, service_level, forecast_period):
     """
