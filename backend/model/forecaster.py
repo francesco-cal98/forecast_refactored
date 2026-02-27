@@ -143,8 +143,11 @@ class Forecaster:
         if abs(tracking_signal) > 4:
             print("  WARNING: tracking signal above threshold (|ts| > 4) — systematic bias detected")
 
-        # Bias correction on test preds
-        y_pred_test_corrected = y_pred_test - last_bias
+        # Bias correction on test preds.
+        # Clamp to 0: if the correction would produce negative demand predictions
+        # (possible when the model systematically over-predicts in recent training weeks),
+        # a negative prediction is physically meaningless and sends WAPE to +inf.
+        y_pred_test_corrected = np.maximum(0.0, y_pred_test - last_bias)
         mape = WAPE(y_test, y_pred_test_corrected)
         print(f"  WAPE (bias-corrected): {mape:.2f}%")
 

@@ -22,6 +22,11 @@
 #   python main.py model=light_lgm              # switch model to LightGBM
 # =============================================================================
 
+import datetime
+import json
+import subprocess
+from pathlib import Path
+
 import hydra
 from omegaconf import DictConfig
 from data.dataset import SalesDataset
@@ -29,6 +34,56 @@ from model.forecaster import Forecaster
 from backtest import BacktestRunner
 import numpy as np
 from utils.helper import resolve_target_keys
+
+
+def _save_benchmark_snapshot(payload: dict, cfg: DictConfig) -> None:
+    """Append one line to results/benchmark_log.jsonl after every backtest run.
+    This gives a permanent, timestamped record of model performance so we can
+    measure the delta introduced by each code change.
+    """
+    results_dir = Path(__file__).parent / "results"
+    results_dir.mkdir(exist_ok=True)
+    log_path = results_dir / "benchmark_log.jsonl"
+
+    try:
+        git_hash = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        git_hash = "unknown"
+
+    snapshot = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "git_hash": git_hash,
+        "model": str(cfg.model.name),
+        "n_cuts": int(cfg.backtest.n_cuts),
+        "train_len": str(cfg.train.train_len),
+        "test_len": str(cfg.train.test_len),
+        **payload["global_summary"],
+        "per_item": {r["item"]: r["summary"] for r in payload["items"]},
+    }
+
+    def _clean(obj):
+        """Recursively replace NaN/Inf with None for valid JSON serialization."""
+        if isinstance(obj, float) and (obj != obj or obj == float("inf") or obj == float("-inf")):
+            return None
+        if isinstance(obj, dict):
+            return {k: _clean(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_clean(v) for v in obj]
+        return obj
+
+    with open(log_path, "a") as f:
+        f.write(json.dumps(_clean(snapshot)) + "\n")
+
+    gs = payload["global_summary"]
+    print(
+        f"\nBenchmark snapshot saved -> {log_path}"
+        f"\n  git={git_hash}  model={cfg.model.name}"
+        f"  WAPE={gs['WAPE_mean']:.2f}% (+/-{gs['WAPE_std']:.2f})"
+        f"  MAPE={gs['MAPE_mean']:.2f}%"
+        f"  MASE={gs['MASE_mean']:.2f}"
+    )
 
 
 @hydra.main(config_path="config", config_name="config", version_base=None)
@@ -70,7 +125,8 @@ def main(cfg: DictConfig):
             output_dir=cfg.backtest.output_dir,
             n_cuts=cfg.backtest.n_cuts,
         )
-        runner.run_all(items)
+        payload = runner.run_all(items)
+        _save_benchmark_snapshot(payload, cfg)
         return
 
     # ------------------------------------------------------------------

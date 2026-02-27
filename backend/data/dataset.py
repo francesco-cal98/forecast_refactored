@@ -446,14 +446,14 @@ class SalesDataset:
             f"  test_until={end_test_date.date()}"
         )
 
-        # Masks: TRAIN = all other series + past of target; TEST = future of target only
+        # Masks: TRAIN = all products bounded by the same date window.
+        # Previously, non-target products had no date cutoff, so their rows
+        # from dates past the boundary ended up in training — look-ahead bias.
+        # Fix: apply the exact same [begin_train_date, boundary_date) window
+        # to every product so no future information leaks into training.
         train_mask = (
-            (df[self.product_var] != product_to_use)
-            | (
-                (df[self.product_var] == product_to_use)
-                & (df[self.date_column] < boundary_date)
-                & (df[self.date_column] >= begin_train_date)
-            )
+            (df[self.date_column] >= begin_train_date)
+            & (df[self.date_column] < boundary_date)
         )
 
         test_mask = (

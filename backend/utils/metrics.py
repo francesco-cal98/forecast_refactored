@@ -94,7 +94,11 @@ def calculate_lost_sales_with_stock(y_pred, sellout, initial_stock, sell_in):
 
 def WAPE(y, yhat):
     y, yhat = np.asarray(y), np.asarray(yhat)
-    denom = np.sum(np.abs(y)) + 1e-8
+    denom = np.sum(np.abs(y))
+    # If the test window is all-zero (intermittent / discontinued product),
+    # WAPE is undefined — return NaN so downstream callers can skip it cleanly.
+    if denom < 1.0:
+        return float("nan")
     return 100.0 * np.sum(np.abs(y - yhat)) / denom
 
 def SMAPE(y, yhat):
@@ -106,7 +110,10 @@ def MASE(y, yhat, y_insample=None, m=1):
     # se non passi y_insample, approssima con y stessa (non ideale ma ok per backtest semplice)
     if y_insample is None or len(y_insample) < m + 1:
         y_insample = y
-    d = np.mean(np.abs(y_insample[m:] - y_insample[:-m])) + 1e-8
+    d = np.mean(np.abs(np.asarray(y_insample)[m:] - np.asarray(y_insample)[:-m]))
+    # If the reference series is flat (d ≈ 0), MASE is undefined.
+    if d < 1.0:
+        return float("nan")
     return np.mean(np.abs(np.asarray(y) - np.asarray(yhat))) / d
 
 # ---------------------------------------------
