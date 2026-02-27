@@ -441,9 +441,9 @@ class SalesDataset:
         end_test_date = boundary_date + parse_time_string(train_params.get("test_len")) if train_params else boundary_date + pd.Timedelta(weeks=8)
 
         print(
-            "📍 Boundary:", boundary_date.date(),
-            "| 🛠️ Train from:", begin_train_date.date(),
-            "| 🧪 Test until:", end_test_date.date(),
+            f"[process_data] boundary={boundary_date.date()}"
+            f"  train_from={begin_train_date.date()}"
+            f"  test_until={end_test_date.date()}"
         )
 
         # Masks: TRAIN = all other series + past of target; TEST = future of target only
@@ -478,22 +478,15 @@ class SalesDataset:
         df_train = df.loc[train_mask].copy()
         df_test  = df.loc[test_mask].copy()
 
-        # Optional: order train with other series first, then target (not strictly needed)
-        df_train[self.product_var] = pd.Categorical(
-            df_train[self.product_var],
-            categories=[p for p in df[self.product_var].unique() if p != product_to_use] + [product_to_use],
-            ordered=True,
-        )
-        # Ordina e indicizza pulito
-        # Split ordinati (come già fai)
+        # Sort each split chronologically within each product
         df_train = df.loc[train_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
         df_test  = df.loc[test_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
 
-        # Salva meta-info temporali per i pesi (stesso indice di X/y)
+        # Store raw dates separately (used by Forecaster.fit() for sample weight computation)
         self.train_dates = df_train[self.date_column].reset_index(drop=True)
         self.test_dates  = df_test[self.date_column].reset_index(drop=True)
 
-        # Costruisci X/y ed ESCLUDI la data grezza
+        # Build X and y, dropping the target column and raw date from features
         drop_cols = [y_col, self.date_column]
         self.X_train = df_train.drop(columns=drop_cols).reset_index(drop=True)
         self.y_train = df_train[y_col].reset_index(drop=True)
@@ -522,16 +515,20 @@ class SalesDataset:
         self.y_train = self.y_train / self.series_scale
         self.y_test  = self.y_test  / self.series_scale
 
-        # Label-encode product columns consistently (prefer product_id if present)
-        # Label-encode robusto (fit su train+test)
+        # --- Label-encode the product column ---
+        # Fit on train+test together so both sets share the same integer mapping.
+        # Then one-hot encode: gives tree models an explicit per-series signal.
         le = LabelEncoder()
         col_cat = "product_id" if "product_id" in self.X_train.columns else self.product_var
-        all_labels = pd.concat([self.X_train[col_cat], self.X_test[col_cat]], ignore_index=True).astype(str).unique()
+        all_labels = pd.concat(
+            [self.X_train[col_cat], self.X_test[col_cat]], ignore_index=True
+        ).astype(str).unique()
         le.fit(all_labels)
         self.X_train[col_cat] = le.transform(self.X_train[col_cat].astype(str))
         self.X_test[col_cat]  = le.transform(self.X_test[col_cat].astype(str))
 
-        # One-hot del prodotto (aiuta gli alberi a “capire” la serie)
+        # One-hot encode: align() ensures train and test have identical dummy
+        # columns even if a product appears only in one split
         self.X_train[col_cat] = pd.Categorical(self.X_train[col_cat], categories=range(len(le.classes_)))
         self.X_test[col_cat]  = pd.Categorical(self.X_test[col_cat],  categories=range(len(le.classes_)))
         train_dum = pd.get_dummies(self.X_train[col_cat], prefix=f"{col_cat}_oh", dtype=int)
@@ -541,13 +538,12 @@ class SalesDataset:
         self.X_test  = pd.concat([self.X_test,  test_dum],  axis=1)
 
         self.product_label_encoder = le
+
+        # Safety check: test set must contain only the target product
         test_items = df_test[self.product_var].astype(str).unique()
-        print(f"[DEBUG] Prodotti presenti nel TEST: {list(test_items)}")
+        print(f"[process_data] test products: {list(test_items)}")
         assert len(test_items) == 1 and test_items[0] == str(product_to_use), \
-        "Il TEST deve contenere SOLO la serie target attesa."
-
-
-        
+            f"TEST must contain only '{product_to_use}', found: {list(test_items)}"
 
 
     # Convenience

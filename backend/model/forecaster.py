@@ -1,42 +1,46 @@
+# =============================================================================
+# forecaster.py -- Model wrapper and stock analysis
+#
+# HOW IT WORKS:
+#   The Forecaster class wraps sklearn/LightGBM models behind a consistent
+#   fit/predict interface. Key responsibilities:
+#
+#   fit()   -- strips non-numeric columns, computes temporal sample weights
+#              (exponential decay: recent rows matter more than old ones),
+#              and calls model.fit() with those weights.
+#
+#   predict() -- runs model.predict(), optionally exponentiates if the model
+#               was trained on log-transformed targets.
+#
+#   stock_analysis() -- given train/test predictions, runs a full inventory
+#                       simulation: safety stock, bias correction, tracking
+#                       signal, stock cover, and service level.
+#
+# SUPPORTED MODELS (set via config model.name):
+#   "random_forest"    -- sklearn RandomForestRegressor
+#   "gradient_boosting"-- sklearn GradientBoostingRegressor
+#   "light_lgm"        -- LightGBM LGBMRegressor (recommended, Tweedie loss)
+#   "svr"              -- sklearn SVR (does not support sample weights)
+# =============================================================================
+
 import os
-import json
-import numpy as np
-import pandas as pd
-
-from typing import List, Tuple, Optional, Dict
-
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.model_selection import GridSearchCV
-from sklearn import svm
-
-try:
-    from lightgbm import LGBMRegressor
-    _HAS_LGBM = True
-except Exception:
-    _HAS_LGBM = False
-
-from utils.metrics import MAPE,WAPE
-from utils.plots import visualize_forecast_and_safety_stock, plot_feat_importance
-from utils.helper import compute_temporal_sample_weights, parse_time_string
-from scipy import stats
-
-
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict
+
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn import svm
+from scipy import stats
+
 try:
     from lightgbm import LGBMRegressor
     _HAS_LGBM = True
 except Exception:
     _HAS_LGBM = False
 
-from utils.metrics import MAPE
+from utils.metrics import MAPE, WAPE
 from utils.helper import compute_temporal_sample_weights
 from utils.plots import visualize_forecast_and_safety_stock, plot_feat_importance
-from scipy import stats
-import os
 
 class Forecaster:
     def __init__(self, model_name: str = "random_forest", params: Optional[Dict] = None):
@@ -103,7 +107,7 @@ class Forecaster:
         save_fp: str = "outputs",
         train_on_log: bool = False,
     ):
-        print("📦 Avvio analisi dello stock...")
+        print("[stock_analysis] Starting inventory simulation...")
 
         # bring to level space if needed
         if train_on_log:
@@ -122,26 +126,26 @@ class Forecaster:
         forecast_error_std = np.std(y_pred_train[-window:] - y_train[-window:])
         z_score = stats.norm.ppf(expected_service_level)
         safety_stock = z_score * forecast_error_std * np.sqrt(lead_time)
-        print(f"🔐 Safety stock calcolata: {safety_stock:.2f}")
+        print(f"  Safety stock: {safety_stock:.2f}")
 
         # Bias
         bias_window = min(3, len(y_train))
         forecast_errors = y_pred_train - y_train
         rolling_bias = pd.Series(forecast_errors).rolling(window=bias_window, min_periods=1).mean()
         last_bias = float(rolling_bias.iloc[-1])
-        print(f"📏 Rolling forecast bias (ultime {bias_window} settimane): {last_bias:.2f}")
+        print(f"  Rolling bias (last {bias_window} weeks): {last_bias:.2f}")
 
         # Tracking Signal
         MAD = np.mean(np.abs(forecast_errors - np.mean(forecast_errors))) + 1e-8
         tracking_signal = np.sum(forecast_errors) / MAD
-        print(f"📡 Tracking Signal: {tracking_signal:.2f}")
+        print(f"  Tracking signal: {tracking_signal:.2f}")
         if abs(tracking_signal) > 4:
-            print("⚠️ Forecast bias eccessivo! Tracking signal sopra soglia.")
+            print("  WARNING: tracking signal above threshold (|ts| > 4) — systematic bias detected")
 
         # Bias correction on test preds
         y_pred_test_corrected = y_pred_test - last_bias
         mape = WAPE(y_test, y_pred_test_corrected)
-        print(f"📈 MAPE domanda (corretta): {mape:.2f}%")
+        print(f"  WAPE (bias-corrected): {mape:.2f}%")
 
         # Dynamic weeks-to-cover
         std_forecast = np.std(y_pred_test_corrected)
@@ -151,7 +155,7 @@ class Forecaster:
             weeks_to_cover = 2
         else:
             weeks_to_cover = 3
-        print(f"🗓️ Weeks to cover dinamico impostato a: {weeks_to_cover}")
+        print(f"  Weeks-to-cover (dynamic): {weeks_to_cover}")
 
         # Train simulation
         n_train = len(y_pred_train)
@@ -198,7 +202,7 @@ class Forecaster:
         total_demand = float(np.sum(y_test))
         total_lost = float(np.sum(lost_sales))
         service_level = 100.0 * total_demand / (total_demand + total_lost + 1e-5)
-        print(f"✅ Service Level: {service_level:.2f}%")
+        print(f"  Service level: {service_level:.2f}%")
 
         stock_test_arr = np.asarray(stock_test)
         stock_cover = stock_test_arr / (y_pred_test_corrected + 1e-5)
