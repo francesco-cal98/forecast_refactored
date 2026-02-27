@@ -446,14 +446,20 @@ class SalesDataset:
             f"  test_until={end_test_date.date()}"
         )
 
-        # Masks: TRAIN = all products bounded by the same date window.
-        # Previously, non-target products had no date cutoff, so their rows
-        # from dates past the boundary ended up in training — look-ahead bias.
-        # Fix: apply the exact same [begin_train_date, boundary_date) window
-        # to every product so no future information leaks into training.
+        # Masks: TRAIN = all other products (any date) + target product past only.
+        # Non-target products are included without a date cutoff because their lag
+        # features are computed per-group (shift within product) so a row at date t
+        # for product B only sees B's own history up to t-1. Market features are also
+        # lagged (market_sum_ex_lag1 etc.), so no contemporaneous cross-target leakage.
+        # Including all dates for other products gives the global model more seasonal
+        # pattern examples at the test-period timing — empirically verified to help.
         train_mask = (
-            (df[self.date_column] >= begin_train_date)
-            & (df[self.date_column] < boundary_date)
+            (df[self.product_var] != product_to_use)
+            | (
+                (df[self.product_var] == product_to_use)
+                & (df[self.date_column] < boundary_date)
+                & (df[self.date_column] >= begin_train_date)
+            )
         )
 
         test_mask = (

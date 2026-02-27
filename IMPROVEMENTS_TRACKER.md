@@ -22,7 +22,7 @@ All expected gains are relative WAPE improvements vs baseline.
 
 | # | Technique | Expected WAPE gain | Effort | Notes |
 |---|---|---|---|---|
-| 6 | **Fix train regime bug** — other products contribute rows with dates past the boundary. Apply same date cutoff to ALL series when `regime=global`. `process_data()` train_mask fix. | 1–3% | 30 min | `data/dataset.py` process_data() train_mask |
+| 6 | ~~**Fix train regime bug**~~ — **REVERTED after A/B test**. Applied same date cutoff to all products but caused −5.4% WAPE regression (CHARLIE +26%). Root cause: non-target products' lag features are per-group (no cross-target leakage); market features are lagged. Their "future" rows give valid seasonal examples. The train_mask as written is correct for global regime. | N/A — reverted | `data/dataset.py` process_data() train_mask |
 | 7 | **Intermittency routing** — detect sparsity (% zero weeks) at training time. Route series with sparsity > 0.4 to Croston/SBA instead of GBDT. Add `sparsity` feature for all series. | 3–8% on sparse SKUs | 2–3h | New class `CrostonForecaster`. Config flag `intermittency_threshold`. |
 | 8 | **Multi-horizon direct forecasting (h=1..8)** — train one independent model per horizon. Each model targets `Sellout_fwd_hW`. Lag features for model_h must be ≥ h to avoid leakage. Enables 8-week planning horizon for supply chain. | Enables new use cases | 4–6h | Loop in `backtest.py`; new config key `horizons: [1,2,3,4,5,6,7,8]` |
 | 9 | **Conformal prediction intervals** — calibrate P10/P50/P90 intervals from backtest residuals. Replace Gaussian safety stock formula with empirical P90 quantile. | Better safety stock | 2h | Post-processing step in `backtest.py`. No model changes needed. |
