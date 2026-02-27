@@ -130,6 +130,8 @@ train:
   train_len: "52w"
   test_len:  "8w"
   boundary: "2025-03-01"
+  intermittency_threshold: 0.4   # route sparse SKUs to Croston-SBA
+  croston_alpha: 0.8
 
 cv:
   n_folds: 2            # 2 cuts fits comfortably in 72 weeks; use 3 for longer CSV data
@@ -151,3 +153,5 @@ backtest:
   enabled: true
   n_cuts: 2             # matches cv.n_folds; increase to 3 when using csv_history (longer data)
   output_dir: "outputs/backtest"
+
+

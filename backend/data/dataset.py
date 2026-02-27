@@ -407,6 +407,32 @@ class SalesDataset:
         X[f"{self.date_column}_cos"] = np.cos(2 * np.pi * day_of_year / max_val)
         return X
 
+    @staticmethod
+    def _compute_intermittency_metrics(y: pd.Series) -> dict[str, float]:
+        """Compute standard intermittency descriptors for one series."""
+        arr = np.asarray(y, dtype=float)
+        if arr.size == 0:
+            return {"sparsity_ratio": 1.0, "adi": 1.0, "cv2": 0.0}
+
+        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+        n = float(arr.size)
+        pos = arr > 0.0
+        n_pos = float(pos.sum())
+        sparsity_ratio = 1.0 - (n_pos / n)
+
+        if n_pos <= 0:
+            return {"sparsity_ratio": float(sparsity_ratio), "adi": float(n), "cv2": 0.0}
+
+        adi = n / n_pos
+        pos_vals = arr[pos]
+        mean_pos = float(np.mean(pos_vals))
+        if pos_vals.size >= 2 and mean_pos > 1e-12:
+            cv = float(np.std(pos_vals, ddof=1) / mean_pos)
+            cv2 = cv * cv
+        else:
+            cv2 = 0.0
+        return {"sparsity_ratio": float(sparsity_ratio), "adi": float(adi), "cv2": float(cv2)}
+
     # -----------------------------
     # Public API used by your training code
     # -----------------------------
@@ -446,6 +472,29 @@ class SalesDataset:
             f"  test_until={end_test_date.date()}"
         )
 
+        # Per-series intermittency profile computed on TRAIN window only.
+        profile_rows = []
+        for pid, g in df.groupby(self.product_var, sort=False):
+            hist = g.loc[
+                (g[self.date_column] >= begin_train_date) & (g[self.date_column] < boundary_date),
+                self.target_column,
+            ]
+            if hist.empty:
+                hist = g.loc[g[self.date_column] < boundary_date, self.target_column]
+            met = self._compute_intermittency_metrics(hist)
+            profile_rows.append({self.product_var: pid, **met})
+        profile_df = pd.DataFrame(profile_rows)
+        df = df.merge(profile_df, on=self.product_var, how="left")
+        self.series_profiles = {
+            str(r[self.product_var]): {
+                "sparsity_ratio": float(r["sparsity_ratio"]),
+                "adi": float(r["adi"]),
+                "cv2": float(r["cv2"]),
+            }
+            for _, r in profile_df.iterrows()
+        }
+        self.target_series_profile = self.series_profiles.get(str(product_to_use), {})
+
         # Masks: TRAIN = all other products (any date) + target product past only.
         # Non-target products are included without a date cutoff because their lag
         # features are computed per-group (shift within product) so a row at date t
@@ -478,6 +527,9 @@ class SalesDataset:
         )
         if y_col not in sel_cols:
             sel_cols.append(y_col)
+        for intermittent_col in ("sparsity_ratio", "adi", "cv2"):
+            if intermittent_col in df.columns and intermittent_col not in sel_cols:
+                sel_cols.append(intermittent_col)
         df = df[sel_cols]
 
         # Split
@@ -498,6 +550,9 @@ class SalesDataset:
         self.y_train = df_train[y_col].reset_index(drop=True)
         self.X_test  = df_test.drop(columns=drop_cols).reset_index(drop=True)
         self.y_test  = df_test[y_col].reset_index(drop=True)
+        self.train_is_target = (
+            df_train[self.product_var].astype(str).reset_index(drop=True) == str(product_to_use)
+        )
 
         # ── Per-series mean scaling ───────────────────────────────────────────
         # Scale the target by the median demand of the TARGET PRODUCT in the

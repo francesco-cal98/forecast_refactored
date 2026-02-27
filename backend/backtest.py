@@ -9,7 +9,8 @@ import pandas as pd
 import mlflow
 
 from utils.helper import resolve_config_refs,resolve_target_keys
-from utils.metrics import MAPE,WAPE,MASE,SMAPE  # già nel tuo repo
+from utils.metrics import MAPE,WAPE,MASE,SMAPE
+from model.croston import CrostonSBAForecaster
 
 
 @dataclass
@@ -147,25 +148,40 @@ class BacktestRunner:
             Xtr_num = ds.X_train.select_dtypes(include=[np.number])
             Xte_num = ds.X_test.select_dtypes(include=[np.number])
 
-            # Use Forecaster.fit() so temporal sample weights are applied correctly
-            recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
-            fore.fit(
-                Xtr_num,
-                ds.y_train,
-                dates=getattr(ds, "train_dates", None),
-                recency_gamma=recency_gamma,
-            )
+            threshold = float(getattr(self.cfg.train, "intermittency_threshold", 0.4))
+            croston_alpha = float(getattr(self.cfg.train, "croston_alpha", 0.1))
+            target_profile = getattr(ds, "target_series_profile", {})
+            target_sparsity_ratio = float(target_profile.get("sparsity_ratio", 0.0))
+            use_sba = target_sparsity_ratio > threshold
 
-            # pred test
-            yhat_test, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
-            # pred train (per stock_analysis)
-            yhat_train = fore.model.predict(Xtr_num)
+            if use_sba:
+                target_train_mask = getattr(ds, "train_is_target", pd.Series([True] * len(ds.y_train)))
+                y_train_target = ds.y_train[target_train_mask].reset_index(drop=True)
+                sba = CrostonSBAForecaster(alpha=croston_alpha)
+                sba.fit(y_train_target.to_numpy())
+                yhat_test = sba.predict(len(ds.y_test))
+                yhat_train = sba.predict_in_sample()
+                y_train_for_stock = y_train_target
+                route_model = "croston_sba"
+            else:
+                # Use Forecaster.fit() so temporal sample weights are applied correctly
+                recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
+                fore.fit(
+                    Xtr_num,
+                    ds.y_train,
+                    dates=getattr(ds, "train_dates", None),
+                    recency_gamma=recency_gamma,
+                )
+                yhat_test, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
+                yhat_train = fore.model.predict(Xtr_num)
+                y_train_for_stock = ds.y_train
+                route_model = str(self.cfg.model.name)
 
             # Inverse-transform from scaled space back to original demand units.
             # series_scale is set in dataset.process_data(); default 1.0 if scaling disabled.
             _scale = getattr(ds, "series_scale", 1.0)
-            yhat_test  = yhat_test  * _scale
-            yhat_train = yhat_train * _scale
+            yhat_test  = np.asarray(yhat_test)  * _scale
+            yhat_train = np.asarray(yhat_train) * _scale
 
             y_true = np.asarray(ds.y_test) * _scale
 
@@ -184,8 +200,8 @@ class BacktestRunner:
             stock_df = fore.stock_analysis(
                 y_test=ds.y_test * _scale,
                 y_pred_test=pd.Series(yhat_test, index=ds.y_test.index),
-                y_train=ds.y_train * _scale,
-                y_pred_train=pd.Series(yhat_train, index=ds.y_train.index),
+                y_train=y_train_for_stock * _scale,
+                y_pred_train=pd.Series(yhat_train),
                 sell_in_true=ds.X_test.get("orders_SellIn", ds.y_test) if hasattr(ds, "X_test") else None,
                 safety_stock_time=getattr(self.cfg.stock, "safety_stock_window", 4),
                 lead_time=getattr(self.cfg.stock, "lead_time", 1),
@@ -236,6 +252,9 @@ class BacktestRunner:
                     "boundary": str(cut.boundary.date()),
                     "test_len": str(cut.test_len),
                     "model": self.cfg.model.name,
+                    "route_model": route_model,
+                    "target_sparsity_ratio": target_sparsity_ratio,
+                    "intermittency_threshold": threshold,
                 })
                 mlflow.log_metrics(metrics)
 
@@ -326,3 +345,4 @@ class BacktestRunner:
             mlflow.log_metrics({f"GLOBAL_{k}": v for k, v in global_summary.items()})
 
         return run_payload
+
