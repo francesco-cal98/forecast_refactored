@@ -1,4 +1,8 @@
 # Import required libraries
+# Use the non-interactive Agg backend so backtest runs never open GUI windows.
+# This prevents Tk event-loop crashes when multiple plots are created in a loop.
+import matplotlib
+matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 import numpy as np
 import pandas as pd
@@ -31,11 +35,11 @@ def plot_forecast_vs_actual(y: ArrayLike,
     plt.xlabel('Date')
     plt.ylabel('Value')
 
-    # Add legend, rotate ticks, and show the plot
+    # Add legend, rotate ticks, and close (caller is responsible for saving)
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.show()
+    plt.close()
 
 # -----------------------------------------------------------------------
 # 2. Visualize forecast + safety stock + stock level + sell-in strategy
@@ -57,12 +61,21 @@ def visualize_forecast_and_safety_stock(product: str,
     # X-axis for plotting
     days = range(1, len(y_pred_prod) + 1)
 
+    y_pred_prod = np.asarray(y_pred_prod, dtype=float)
+    y = np.asarray(y, dtype=float)
+    weekly_stock = np.asarray(weekly_stock, dtype=float)
+    required_sell_in = np.asarray(required_sell_in, dtype=float)
+    safety_stock = np.asarray(safety_stock, dtype=float)
+    if safety_stock.ndim == 0:
+        safety_stock = np.full_like(y_pred_prod, float(safety_stock))
+    elif safety_stock.size != y_pred_prod.size:
+        safety_stock = np.full_like(y_pred_prod, float(np.nanmean(safety_stock)))
+
     # Forecasted sell-out line
     ax.plot(days, y_pred_prod, label='Previsione', color=palette[0], linewidth=2, linestyle='--')
 
-    # Shade area representing forecast + safety stock (as a band of uncertainty)
-    ax.fill_between(days, y_pred_prod, y_pred_prod + safety_stock, 
-                    color=palette[1], alpha=0.2, label='Intervallo Safety Stock')
+    # Safety stock floor (flat/step line in level units).
+    ax.plot(days, safety_stock, label='Safety Stock', color=palette[1], linewidth=2)
 
     # Required sell-in line (predicted stock to order)
     ax.plot(days, required_sell_in, label='Stima degli ordini', color=palette[2], linewidth=2, linestyle='--')
@@ -82,7 +95,18 @@ def visualize_forecast_and_safety_stock(product: str,
     
     # Ticks and legend styling
     ax.tick_params(axis='both', which='major', labelsize=17)
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=17)
+    handles, labels = ax.get_legend_handles_labels()
+    if stock_cover is not None:
+        cover_arr = np.asarray(stock_cover, dtype=float)
+        if cover_arr.size == len(days):
+            ax2 = ax.twinx()
+            ax2.plot(days, cover_arr, label='Stock Cover (weeks)', color=palette[5], linewidth=1.5, alpha=0.9)
+            ax2.set_ylabel('Stock Cover (weeks)', fontsize=14)
+            ax2.tick_params(axis='y', labelsize=12)
+            h2, l2 = ax2.get_legend_handles_labels()
+            handles += h2
+            labels += l2
+    ax.legend(handles, labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=17)
     plt.xticks(rotation=45, ha='right')
 
     # Add a light grid
@@ -126,13 +150,6 @@ def visualize_forecast_and_safety_stock2(product: str,
     plt.xticks(rotation=45, ha='right')
     ax.grid(True, linestyle='--', alpha=0.7)
 
-    # Export forecast and actual values to CSV
-    df = pd.DataFrame({
-        "Sellout Effettivo": np.concatenate([y[:split_idx], [np.nan] * (len(y_pred_adjusted[split_idx:]) - len(y[:split_idx]))]),
-        "Previsione Sellout": np.concatenate([y_pred_adjusted[split_idx:]])
-    })
-    df.to_csv(r"C:\Users\fraca\Desktop\sales\Sell_Out_Sell_In_Forecasting-main\output\forecast_data.csv", index=False)
-
     plt.tight_layout()
     return fig
 
@@ -142,7 +159,7 @@ def visualize_forecast_and_safety_stock2(product: str,
 def plot_feat_importance(importance: ArrayLike, 
                          feature_names: ArrayLike, 
                          min_importance: float = 0.01,
-                         n_features: int = 10) -> None:
+                         n_features: int = 10):
     # Prepare a DataFrame for plotting
     df_feature_importance = pd.DataFrame({
         'column': feature_names,
@@ -154,14 +171,14 @@ def plot_feat_importance(importance: ArrayLike,
         df_feature_importance['importance'] >= min_importance
     ].nlargest(n_features, 'importance').sort_values('importance', ascending=True).reset_index(drop=True)
 
-    # Create horizontal bar chart
-    plt.figure(figsize=(16, 4))
-    plt.barh(df_feature_importance['column'], df_feature_importance['importance'])
-    plt.tick_params(axis='both', labelsize=10)
-    plt.title('Model Feature Importance', size=20)
-    plt.xlabel('Importance', size=15)
+    # Create horizontal bar chart and return the figure so the caller can save it
+    fig, ax = plt.subplots(figsize=(16, 4))
+    ax.barh(df_feature_importance['column'], df_feature_importance['importance'])
+    ax.tick_params(axis='both', labelsize=10)
+    ax.set_title('Model Feature Importance', size=20)
+    ax.set_xlabel('Importance', size=15)
     plt.tight_layout()
-    plt.show()
+    return fig
 
 # -----------------------------------------------------------------------
 # 5. Scenario analysis: central, optimistic, pessimistic forecasts
@@ -201,4 +218,4 @@ def plot_scenarios(product: str,
     plt.xlabel("Time")
     plt.ylabel("Predicted Value")
     plt.legend()
-    plt.show()
+    plt.close()

@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - /paths: default
+  - /regulatory/sources: cellar
+  - _self_
+
+source: cellar  # or eurlex_soap
+
+query_terms: ["cosmetics", "textile", "retail"]
+eurovoc_uris: []  # optional list of EuroVoc concept URIs
+
+language: "ENG"  # ENG/ITA/etc (Cellar code)
+date_from: "2020-01-01"
+date_to: "2025-10-19"
+
+page_size: 5000  # SPARQL LIMIT per page
+max_pages: 50
+
+outfile: "${paths.raw_dir}/cellar_${now:%Y%m%d}_${now:%H%M%S}.parquet"
+log_level: "INFO"

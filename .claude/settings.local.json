@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(python -m src.forecasting.regulatory.ingest.run_ingest:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

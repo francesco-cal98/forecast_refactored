@@ -1,0 +1,6 @@
+# @package regulatory.sources
+
+wsdl_url: ""
+username: ""
+password: ""
+enabled: false

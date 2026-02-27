@@ -1,0 +1,15 @@
+# Data source: TEST DATI SAMPLE.xlsx
+# Sheet 1 (VOLUMI): Item Name as rows, W1 2024 ... as columns  -> melted to long format
+# Sheet 2 (PREZZOMODA): Anno/MESE header rows, products as rows -> monthly prices
+# Parsed by: load_weekly_data_with_prices() in utils/helper.py
+# Output columns: Item, Settimana, Sellout, Prezzo
+
+file_path: "C:\\Users\\fraca\\forecast_refactored\\TEST DATI SAMPLE.xlsx"
+separator: ";"                # unused for xlsx, kept for interface parity
+date_column: "Settimana"      # column name produced by load_weekly_data_with_prices()
+target_column: "Sellout"
+product_column: "Item"        # column name produced by load_weekly_data_with_prices()
+nr_horizon: 1
+product_name: "ALPHA"         # default product for single-run mode
+                              # available: ALPHA, BETA, DELTA, CHARLIE
+granularity: "weekly"

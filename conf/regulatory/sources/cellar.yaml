@@ -1,0 +1,5 @@
+# @package regulatory.sources
+
+endpoint: "https://publications.europa.eu/webapi/rdf/sparql"
+timeout_s: 60
+retries: 3
