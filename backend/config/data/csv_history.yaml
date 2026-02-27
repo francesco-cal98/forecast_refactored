@@ -1,0 +1,12 @@
+# Data source: History_SellIn_SellOut.csv
+# Standard long-format CSV with semicolon separator
+# Columns expected: PERIOD_TAG, Sellout, product_group (+ optional others)
+
+file_path: "C:\\Users\\fraca\\forecast_refactored\\History_SellIn_SellOut.csv"
+separator: ";"
+date_column: "PERIOD_TAG"
+target_column: "Sellout"
+product_column: "product_group"
+nr_horizon: 1
+product_name: "Product_01"    # update to any valid product in the CSV
+granularity: "weekly"
