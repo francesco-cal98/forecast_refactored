@@ -69,9 +69,18 @@ def main(cfg: DictConfig):
                                        "boundary": cfg.train.boundary})
 
     forecaster = Forecaster(model_name=cfg.model.name, params=cfg.model.params)
-    forecaster.model.fit(dataset.X_train.select_dtypes(include=[np.number]), dataset.y_train)
-    _ = forecaster.predict(dataset.X_test, dataset.y_test)
-    print("✅ Run singolo completato.")
+    recency_gamma = float(getattr(cfg.cv, "recency_gamma", 0.08))
+    forecaster.fit(
+        dataset.X_train,
+        dataset.y_train,
+        dates=getattr(dataset, "train_dates", None),
+        recency_gamma=recency_gamma,
+    )
+    y_pred, err = forecaster.predict(dataset.X_test, dataset.y_test)
+    # Inverse-transform from scaled space back to original units
+    _scale = getattr(dataset, "series_scale", 1.0)
+    y_pred = y_pred * _scale
+    print(f"✅ Run singolo completato. WAPE: {err:.2f}%")
 
 if __name__ == "__main__":
     main()
