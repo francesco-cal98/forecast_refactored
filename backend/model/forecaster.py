@@ -30,6 +30,7 @@ from typing import Optional, Dict
 
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn import svm
+from sklearn.impute import SimpleImputer
 from scipy import stats
 
 try:
@@ -48,6 +49,8 @@ class Forecaster:
         self.model_name = (model_name or "").lower()
         self.params = params or {}
         self.model = self._initialize_model()
+        self._supports_nan_native = self.model_name in ("light_gbm", "lgbm", "lightgbm")
+        self._imputer = None if self._supports_nan_native else SimpleImputer(strategy="median")
         self.regressor_names = None
 
     def _initialize_model(self):
@@ -67,6 +70,7 @@ class Forecaster:
     def fit(self, X_train: pd.DataFrame, y_train: pd.Series, *, dates: Optional[pd.Series] = None, recency_gamma: float = 0.08):
         non_numeric = X_train.select_dtypes(exclude=[np.number]).columns.tolist()
         X_num = X_train.drop(columns=non_numeric) if non_numeric else X_train
+        X_fit = X_num if self._imputer is None else self._imputer.fit_transform(X_num)
         weights = None
         if dates is not None:
             dates = pd.to_datetime(dates, errors="coerce")
@@ -74,16 +78,17 @@ class Forecaster:
             weights = compute_temporal_sample_weights(dates, strategy="exponential", gamma=recency_gamma)
         try:
             # Fix: pass computed weights instead of hardcoded None
-            self.model.fit(X_num, y_train, sample_weight=weights)
+            self.model.fit(X_fit, y_train, sample_weight=weights)
         except TypeError:
             # SVR does not support sample_weight — fall back silently
-            self.model.fit(X_num, y_train)
-        self.regressor_names = getattr(self.model, "feature_names_in_", X_num.columns.to_numpy())
+            self.model.fit(X_fit, y_train)
+        self.regressor_names = X_num.columns.to_numpy()
 
     def predict(self, X: pd.DataFrame, y: Optional[pd.Series] = None, error_fun=WAPE, *, train_on_log: bool = False):
         non_numeric = X.select_dtypes(exclude=[np.number]).columns.tolist()
         X_num = X.drop(columns=non_numeric) if non_numeric else X
-        y_pred = self.model.predict(X_num)
+        X_pred = X_num if self._imputer is None else self._imputer.transform(X_num)
+        y_pred = self.model.predict(X_pred)
         if train_on_log:
             y_pred = np.expm1(y_pred); y_true = np.expm1(y) if y is not None else None
         else:
@@ -107,6 +112,8 @@ class Forecaster:
         product_name: str = "Prodotto",
         save_fp: str = "outputs",
         train_on_log: bool = False,
+        residual_quantiles: Optional[Dict[str, float]] = None,
+        apply_bias_correction: bool = True,
     ):
         print("[stock_analysis] Starting inventory simulation...")
 
@@ -122,12 +129,17 @@ class Forecaster:
         y_test = np.asarray(y_test)
         y_pred_test = np.asarray(y_pred_test)
 
-        # Safety stock based on recent train window
-        window = min(safety_stock_time, len(y_train))
-        forecast_error_std = np.std(y_pred_train[-window:] - y_train[-window:])
-        z_score = stats.norm.ppf(expected_service_level)
-        safety_stock = z_score * forecast_error_std * np.sqrt(lead_time)
-        print(f"  Safety stock: {safety_stock:.2f}")
+        # Safety stock based on calibrated residual quantiles (conformal-style).
+        # Fallback to historical Gaussian rule if quantiles are unavailable.
+        if residual_quantiles is not None and "q90" in residual_quantiles:
+            safety_stock = max(0.0, float(residual_quantiles["q90"]))
+            print(f"  Safety stock (P90 residual): {safety_stock:.2f}")
+        else:
+            window = min(safety_stock_time, len(y_train))
+            forecast_error_std = np.std(y_pred_train[-window:] - y_train[-window:])
+            z_score = stats.norm.ppf(expected_service_level)
+            safety_stock = z_score * forecast_error_std * np.sqrt(lead_time)
+            print(f"  Safety stock: {safety_stock:.2f}")
 
         # Bias
         bias_window = min(3, len(y_train))
@@ -147,48 +159,60 @@ class Forecaster:
         # Clamp to 0: if the correction would produce negative demand predictions
         # (possible when the model systematically over-predicts in recent training weeks),
         # a negative prediction is physically meaningless and sends WAPE to +inf.
-        y_pred_test_corrected = np.maximum(0.0, y_pred_test - last_bias)
+        if apply_bias_correction:
+            y_pred_test_corrected = np.maximum(0.0, y_pred_test - last_bias)
+        else:
+            y_pred_test_corrected = np.maximum(0.0, y_pred_test)
         mape = WAPE(y_test, y_pred_test_corrected)
         print(f"  WAPE (bias-corrected): {mape:.2f}%")
 
         # Dynamic weeks-to-cover
         std_forecast = np.std(y_pred_test_corrected)
-        if std_forecast < 100:
+        mean_forecast = max(float(np.mean(y_pred_test_corrected)), 1e-6)
+        cv_forecast = std_forecast / mean_forecast
+        if cv_forecast < 0.3:
             weeks_to_cover = 1
-        elif std_forecast < 300:
+        elif cv_forecast < 0.7:
             weeks_to_cover = 2
         else:
             weeks_to_cover = 3
-        print(f"  Weeks-to-cover (dynamic): {weeks_to_cover}")
+        print(f"  Weeks-to-cover (dynamic): {weeks_to_cover} (cv={cv_forecast:.2f})")
 
         # Train simulation
         n_train = len(y_pred_train)
         stock_train = np.zeros(n_train)
         forecast_sell_in_train = np.zeros(n_train)
         current_stock = 0.0
+        lt = max(int(lead_time), 1)
+        in_transit = [0.0] * lt
 
         for i in range(n_train):
+            arrival = in_transit.pop(0)
+            current_stock += arrival
             future_demand = float(np.mean(y_pred_train[i:i + weeks_to_cover]))
             required_stock = future_demand + safety_stock
             order = max(0.0, required_stock - current_stock)
             forecast_sell_in_train[i] = order
-            current_stock = max(0.0, current_stock + order - float(y_train[i]))
+            in_transit.append(order)
+            current_stock = max(0.0, current_stock - float(y_train[i]))
             stock_train[i] = current_stock
 
         # Test simulation
-        current_stock = float(np.mean(stock_train[max(0, n_train - weeks_to_cover):]))
+        current_stock = float(stock_train[-1]) if n_train > 0 else 0.0
+        in_transit_test = list(in_transit)
         stock_test = []
-        stock_test1 = []
         forecast_sell_in_test = []
         lost_sales = []
         n_test = len(y_test)
 
         for i in range(n_test):
+            arrival = in_transit_test.pop(0)
+            current_stock += arrival
             future_demand = float(np.mean(y_pred_test_corrected[i:i + weeks_to_cover]))
             required_stock = future_demand + safety_stock
             order = max(0.0, required_stock - current_stock)
             forecast_sell_in_test.append(order)
-            current_stock += order
+            in_transit_test.append(order)
             demand = float(y_test[i])
             if demand > current_stock:
                 lost = demand - current_stock
@@ -198,10 +222,6 @@ class Forecaster:
                 lost_sales.append(0.0)
                 current_stock -= demand
             stock_test.append(current_stock)
-            stock_test1.append((order + safety_stock) - demand)
-
-        if stock_test:
-            stock_test1[0] = float(np.mean(stock_train[max(0, n_train - weeks_to_cover):]))
 
         total_demand = float(np.sum(y_test))
         total_lost = float(np.sum(lost_sales))

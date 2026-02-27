@@ -176,8 +176,11 @@ class SalesDataset:
                 .transform(lambda x: x.rolling(w, min_periods=w).apply(_slope, raw=True).shift(1))
             )
 
-        # Optional informational ratio (not to be used with future info)
-        df["market_share"] = df[base_col] / df["market_sum"].replace(0, np.nan)
+        # Lagged market share to avoid contemporaneous leakage at inference time.
+        df["market_share"] = (
+            df.groupby(self.product_var)[base_col].shift(1)
+            / df.groupby(self.product_var)["market_sum"].shift(1).replace(0, np.nan)
+        )
 
         return df
 
@@ -351,6 +354,18 @@ class SalesDataset:
         df[y_col] = df.groupby(self.product_var)[self.target_column].shift(-self.pred_h)
 
         # ------------------------
+        # Add market-level features (cross-series)
+        # ------------------------
+        # Build them before log-transform so these features are transformed
+        # consistently with the rest of the positive demand-derived covariates.
+        df = self._add_market_features(
+            df,
+            base_col=self.target_column,
+            lags=tuple(self.config.get("market_lags", (1, 4, 8, 12))),
+            trend_windows=tuple(self.config.get("market_trend_windows", (4, 8))),
+        )
+
+        # ------------------------
         # Log-transform POSITIVE features only (never y_col)
         # ------------------------
         exclude_cols = [
@@ -370,19 +385,9 @@ class SalesDataset:
         for c in cols_to_log:
             df[c] = np.log1p(df[c])
 
-        # ------------------------
-        # Add market-level features (cross-series)
-        # ------------------------
-        df = self._add_market_features(
-            df,
-            base_col=self.target_column,
-            lags=tuple(self.config.get("market_lags", (1, 4, 8, 12))),
-            trend_windows=tuple(self.config.get("market_trend_windows", (4, 8))),
-        )
-
         # Final cleanup
         df = df.reset_index(drop=True)
-        df.fillna(0, inplace=True)
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
         if self.debug_save:
             try:
@@ -535,10 +540,12 @@ class SalesDataset:
         # Split
         df_train = df.loc[train_mask].copy()
         df_test  = df.loc[test_mask].copy()
+        df_train = df_train[df_train[y_col].notna()].copy()
+        df_test = df_test[df_test[y_col].notna()].copy()
 
         # Sort each split chronologically within each product
-        df_train = df.loc[train_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
-        df_test  = df.loc[test_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
+        df_train = df_train.sort_values([self.product_var, self.date_column]).reset_index(drop=True)
+        df_test  = df_test.sort_values([self.product_var, self.date_column]).reset_index(drop=True)
 
         # Store raw dates separately (used by Forecaster.fit() for sample weight computation)
         self.train_dates = df_train[self.date_column].reset_index(drop=True)

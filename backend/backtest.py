@@ -11,6 +11,8 @@ import mlflow
 from utils.helper import resolve_config_refs,resolve_target_keys
 from utils.metrics import MAPE,WAPE,MASE,SMAPE
 from model.croston import CrostonSBAForecaster
+from model.rf_forecaster import RandomForestForecaster
+from model.ensemble_forecaster import EnsembleForecaster
 
 
 @dataclass
@@ -85,6 +87,15 @@ class BacktestRunner:
             return pd.to_datetime(ds.X_test[ds.date_column])
         return pd.Series(range(len(ds.y_test)), name="t")
 
+    @staticmethod
+    def _residual_quantiles(residuals: np.ndarray) -> Dict[str, float]:
+        arr = np.asarray(residuals, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return {"q10": 0.0, "q50": 0.0, "q90": 0.0}
+        q10, q50, q90 = np.quantile(arr, [0.1, 0.5, 0.9])
+        return {"q10": float(q10), "q50": float(q50), "q90": float(q90)}
+
     # ---------- main API ----------
     def run_for_item(self, item: str) -> Dict[str, Any]:
         # 1) Sonda le date disponibili per costruire i cut
@@ -117,6 +128,11 @@ class BacktestRunner:
         # Artefatti complessivi per questo item
         results: List[BacktestResult] = []
         artifacts_rows = []
+        oof_rows = []
+        residual_history: List[float] = []
+        meta_history_rows: List[Dict[str, float]] = []
+        ensemble_enabled = bool(getattr(self.cfg.train, "ensemble", False))
+        ridge_alpha = float(getattr(self.cfg.train, "ridge_alpha", 1.0))
 
         for cut_idx, cut in enumerate(cuts, start=1):
             # 2) Prepara il dataset per questo cut
@@ -149,32 +165,55 @@ class BacktestRunner:
             Xte_num = ds.X_test.select_dtypes(include=[np.number])
 
             threshold = float(getattr(self.cfg.train, "intermittency_threshold", 0.4))
+            adi_threshold = float(getattr(self.cfg.train, "intermittency_adi_threshold", 1.32))
+            cv2_threshold = float(getattr(self.cfg.train, "intermittency_cv2_threshold", 0.49))
             croston_alpha = float(getattr(self.cfg.train, "croston_alpha", 0.1))
             target_profile = getattr(ds, "target_series_profile", {})
             target_sparsity_ratio = float(target_profile.get("sparsity_ratio", 0.0))
-            use_sba = target_sparsity_ratio > threshold
+            target_adi = float(target_profile.get("adi", np.nan))
+            target_cv2 = float(target_profile.get("cv2", np.nan))
+            if np.isfinite(target_adi) and np.isfinite(target_cv2):
+                use_sba = (target_adi >= adi_threshold) and (target_cv2 < cv2_threshold)
+            else:
+                use_sba = target_sparsity_ratio > threshold
+            recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
+            target_mask = np.asarray(
+                getattr(ds, "train_is_target", pd.Series([True] * len(ds.y_train))),
+                dtype=bool,
+            )
+
+            # Base model 1: LGBM (current Forecaster model)
+            fore.fit(
+                Xtr_num,
+                ds.y_train,
+                dates=getattr(ds, "train_dates", None),
+                recency_gamma=recency_gamma,
+            )
+            yhat_test_lgbm, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
+            yhat_train_lgbm, _ = fore.predict(ds.X_train, ds.y_train, error_fun=MAPE)
+
+            # Base model 2: Random Forest (for future stacking)
+            rf_params = dict(getattr(self.cfg, "rf_model", {}))
+            rf_fore = RandomForestForecaster(params=rf_params)
+            rf_fore.fit(
+                Xtr_num,
+                ds.y_train,
+                dates=getattr(ds, "train_dates", None),
+                recency_gamma=recency_gamma,
+            )
+            yhat_test_rf, _ = rf_fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
+            yhat_train_rf, _ = rf_fore.predict(ds.X_train, ds.y_train, error_fun=MAPE)
 
             if use_sba:
-                target_train_mask = getattr(ds, "train_is_target", pd.Series([True] * len(ds.y_train)))
-                y_train_target = ds.y_train[target_train_mask].reset_index(drop=True)
+                y_train_target = ds.y_train[target_mask].reset_index(drop=True)
                 sba = CrostonSBAForecaster(alpha=croston_alpha)
                 sba.fit(y_train_target.to_numpy())
                 yhat_test = sba.predict(len(ds.y_test))
                 yhat_train = sba.predict_in_sample()
-                y_train_for_stock = y_train_target
                 route_model = "croston_sba"
             else:
-                # Use Forecaster.fit() so temporal sample weights are applied correctly
-                recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
-                fore.fit(
-                    Xtr_num,
-                    ds.y_train,
-                    dates=getattr(ds, "train_dates", None),
-                    recency_gamma=recency_gamma,
-                )
-                yhat_test, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
-                yhat_train = fore.model.predict(Xtr_num)
-                y_train_for_stock = ds.y_train
+                yhat_test = yhat_test_lgbm
+                yhat_train = yhat_train_lgbm
                 route_model = str(self.cfg.model.name)
 
             # Inverse-transform from scaled space back to original demand units.
@@ -182,15 +221,66 @@ class BacktestRunner:
             _scale = getattr(ds, "series_scale", 1.0)
             yhat_test  = np.asarray(yhat_test)  * _scale
             yhat_train = np.asarray(yhat_train) * _scale
+            yhat_test_lgbm = np.asarray(yhat_test_lgbm) * _scale
+            yhat_train_lgbm = np.asarray(yhat_train_lgbm) * _scale
+            yhat_test_rf = np.asarray(yhat_test_rf) * _scale
+            yhat_train_rf = np.asarray(yhat_train_rf) * _scale
+
+            meta_coef_lgbm = np.nan
+            meta_coef_rf = np.nan
+            if ensemble_enabled and (not use_sba) and len(meta_history_rows) >= 8:
+                meta = EnsembleForecaster(alpha=ridge_alpha)
+                hist = pd.DataFrame(meta_history_rows)
+                meta.fit(
+                    hist["y_pred_lgbm"].to_numpy(),
+                    hist["y_pred_rf"].to_numpy(),
+                    hist["y_true"].to_numpy(),
+                )
+                if meta.is_fitted:
+                    yhat_test = np.maximum(0.0, meta.predict(yhat_test_lgbm, yhat_test_rf))
+                    yhat_train = np.maximum(0.0, meta.predict(yhat_train_lgbm, yhat_train_rf))
+                    route_model = "ridge_stack_lgbm_rf"
+                    meta_coef_lgbm = float(meta.coef_[0])
+                    meta_coef_rf = float(meta.coef_[1])
 
             y_true = np.asarray(ds.y_test) * _scale
 
+            # Conformal-style residual calibration:
+            # - for early cuts, bootstrap from target train residuals
+            # - once available, use accumulated out-of-fold residual history
+            if use_sba:
+                y_train_for_stock = y_train_target
+                yhat_train_for_stock = np.asarray(yhat_train)
+            else:
+                y_train_for_stock = ds.y_train[target_mask].reset_index(drop=True)
+                yhat_train_for_stock = np.asarray(yhat_train)[target_mask]
+
+            if len(residual_history) >= 4:
+                residual_q = self._residual_quantiles(np.asarray(residual_history))
+            else:
+                seed = np.asarray(y_train_for_stock, dtype=float) * _scale
+                naive_residuals = seed[1:] - seed[:-1] if seed.size >= 2 else np.zeros(1, dtype=float)
+                residual_q = self._residual_quantiles(naive_residuals)
+
+            yhat_p10 = np.maximum(0.0, yhat_test + residual_q["q10"])
+            yhat_p50 = np.maximum(0.0, yhat_test + residual_q["q50"])
+            yhat_p90 = np.maximum(0.0, yhat_test + residual_q["q90"])
+
             # 4) metriche "classiche"
+            wape_num = float(np.sum(np.abs(y_true - yhat_test)))
+            wape_den = float(np.sum(np.abs(y_true)))
             metrics = {
                 "MAPE": float(MAPE(y_true, yhat_test)),
                 "WAPE": float(WAPE(y_true, yhat_test)),
                 "SMAPE": float(SMAPE(y_true, yhat_test)),
-                "MASE": float(MASE(y_true, yhat_test)),
+                "MASE": float(MASE(y_true, yhat_test, y_insample=np.asarray(y_train_for_stock) * _scale)),
+                "WAPE_num": wape_num,
+                "WAPE_den": wape_den,
+                "Q10_resid": float(residual_q["q10"]),
+                "Q50_resid": float(residual_q["q50"]),
+                "Q90_resid": float(residual_q["q90"]),
+                "MetaCoefLGBM": float(meta_coef_lgbm) if np.isfinite(meta_coef_lgbm) else np.nan,
+                "MetaCoefRF": float(meta_coef_rf) if np.isfinite(meta_coef_rf) else np.nan,
             }
 
             # 5) Stock analysis per cut: cartella dedicata
@@ -201,7 +291,7 @@ class BacktestRunner:
                 y_test=ds.y_test * _scale,
                 y_pred_test=pd.Series(yhat_test, index=ds.y_test.index),
                 y_train=y_train_for_stock * _scale,
-                y_pred_train=pd.Series(yhat_train),
+                y_pred_train=pd.Series(yhat_train_for_stock),
                 sell_in_true=ds.X_test.get("orders_SellIn", ds.y_test) if hasattr(ds, "X_test") else None,
                 safety_stock_time=getattr(self.cfg.stock, "safety_stock_window", 4),
                 lead_time=getattr(self.cfg.stock, "lead_time", 1),
@@ -209,7 +299,13 @@ class BacktestRunner:
                 product_name=item,
                 save_fp=cut_dir,
                 train_on_log=False,
+                residual_quantiles=residual_q,
+                apply_bias_correction=not use_sba,
             )
+
+            stock_df["y_pred_p10"] = yhat_p10
+            stock_df["y_pred_p50"] = yhat_p50
+            stock_df["y_pred_p90"] = yhat_p90
 
             # 6) log extra metriche dalla stock analysis
             try:
@@ -223,14 +319,35 @@ class BacktestRunner:
 
             # 7) Preds "timelined" per report
             test_dates = self._get_test_dates(ds)
-            for t, yp, yt in zip(test_dates, yhat_test, y_true):
+            for t, yp, yt, p10, p50, p90, yp_lgbm, yp_rf in zip(
+                test_dates, yhat_test, y_true, yhat_p10, yhat_p50, yhat_p90, yhat_test_lgbm, yhat_test_rf
+            ):
                 artifacts_rows.append({
                     "item": item,
                     "cut_idx": cut_idx,
                     "timestamp": str(pd.to_datetime(t).date()) if not pd.isna(t) else "",
                     "y_true": float(yt),
                     "y_pred": float(yp),
+                    "y_pred_lgbm": float(yp_lgbm),
+                    "y_pred_rf": float(yp_rf),
+                    "y_pred_p10": float(p10),
+                    "y_pred_p50": float(p50),
+                    "y_pred_p90": float(p90),
                 })
+                oof_rows.append({
+                    "item": item,
+                    "cut_idx": cut_idx,
+                    "timestamp": str(pd.to_datetime(t).date()) if not pd.isna(t) else "",
+                    "y_true": float(yt),
+                    "y_pred_lgbm": float(yp_lgbm),
+                    "y_pred_rf": float(yp_rf),
+                })
+                meta_history_rows.append({
+                    "y_true": float(yt),
+                    "y_pred_lgbm": float(yp_lgbm),
+                    "y_pred_rf": float(yp_rf),
+                })
+            residual_history.extend((y_true - yhat_test).tolist())
 
             # 8) Artefatti salvati (CSV + XLSX della stock analysis) & MLflow nested run
             preds_csv_fp = os.path.join(cut_dir, f"preds_{item}_cut{cut_idx}.csv")
@@ -254,7 +371,13 @@ class BacktestRunner:
                     "model": self.cfg.model.name,
                     "route_model": route_model,
                     "target_sparsity_ratio": target_sparsity_ratio,
+                    "target_adi": target_adi,
+                    "target_cv2": target_cv2,
                     "intermittency_threshold": threshold,
+                    "intermittency_adi_threshold": adi_threshold,
+                    "intermittency_cv2_threshold": cv2_threshold,
+                    "ensemble_enabled": ensemble_enabled,
+                    "ridge_alpha": ridge_alpha,
                 })
                 mlflow.log_metrics(metrics)
 
@@ -283,11 +406,16 @@ class BacktestRunner:
 
         # 9) Aggregazione per item
         agg = pd.DataFrame([r.metrics for r in results])
+        wape_num_sum = float(np.nansum(agg["WAPE_num"]))
+        wape_den_sum = float(np.nansum(agg["WAPE_den"]))
+        wape_pooled = float(100.0 * wape_num_sum / wape_den_sum) if wape_den_sum > 1e-12 else float("nan")
+
         summary = {
             "item": item,
             "cuts": len(results),
             "MAPE_mean": float(agg["MAPE"].mean()), "MAPE_std": float(agg["MAPE"].std(ddof=1)),
-            "WAPE_mean": float(agg["WAPE"].mean()), "WAPE_std": float(agg["WAPE"].std(ddof=1)),
+            "WAPE_mean": wape_pooled, "WAPE_std": float(agg["WAPE"].std(ddof=1)),
+            "WAPE_num": wape_num_sum, "WAPE_den": wape_den_sum,
             "SMAPE_mean": float(agg["SMAPE"].mean()), "SMAPE_std": float(agg["SMAPE"].std(ddof=1)),
             "MASE_mean": float(agg["MASE"].mean()), "MASE_std": float(agg["MASE"].std(ddof=1)),
         }
@@ -295,12 +423,15 @@ class BacktestRunner:
         # File “preds” consolidato per item (ultimo stato di artifacts_rows)
         item_preds_csv = os.path.join(self.output_dir, f"preds_{item}.csv")
         pd.DataFrame(artifacts_rows).to_csv(item_preds_csv, index=False)
+        item_oof_csv = os.path.join(self.output_dir, f"oof_base_models_{item}.csv")
+        pd.DataFrame(oof_rows).to_csv(item_oof_csv, index=False)
 
         return {
             "item": item,
             "cuts": [r.__dict__ for r in results],
             "summary": summary,
             "preds_csv": item_preds_csv,
+            "oof_csv": item_oof_csv,
         }
 
     def run_all(self, items: List[str]) -> Dict[str, Any]:
@@ -330,12 +461,17 @@ class BacktestRunner:
 
             # global summary
             gdf = pd.DataFrame(all_summaries)
+            global_wape_num = float(np.nansum(gdf["WAPE_num"]))
+            global_wape_den = float(np.nansum(gdf["WAPE_den"]))
+            global_wape_mean = float(100.0 * global_wape_num / global_wape_den) if global_wape_den > 1e-12 else float("nan")
             global_summary = {
                 "items": len(items),
                 "MAPE_mean": float(gdf["MAPE_mean"].mean()),
                 "MAPE_std": float(gdf["MAPE_mean"].std(ddof=1)),
-                "WAPE_mean": float(gdf["WAPE_mean"].mean()),
+                "WAPE_mean": global_wape_mean,
                 "WAPE_std": float(gdf["WAPE_mean"].std(ddof=1)),
+                "WAPE_num": global_wape_num,
+                "WAPE_den": global_wape_den,
                 "SMAPE_mean": float(gdf["SMAPE_mean"].mean()),
                 "SMAPE_std": float(gdf["SMAPE_mean"].std(ddof=1)),
                 "MASE_mean": float(gdf["MASE_mean"].mean()),

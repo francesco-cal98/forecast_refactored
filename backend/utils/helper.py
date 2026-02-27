@@ -227,16 +227,6 @@ def load_weekly_data_with_prices(filepath, product_var='Item', date_column='Sett
 
     df_price_weekly = pd.DataFrame(rows)
     
-    # merge del dataset
-    df_final = pd.merge(
-    df_sellout,
-    df_price_weekly,
-    how='left',
-    on=['Item', 'Anno', 'Settimana_num']
-)
-
-
-    
     # 4. Merge prezzi settimanali con dati settimanali sellout
     df_final = pd.merge(df_sellout, df_price_weekly, how='left', on=[product_var, 'Anno', 'Settimana_num'])
 
@@ -245,27 +235,7 @@ def load_weekly_data_with_prices(filepath, product_var='Item', date_column='Sett
 
     return df_final
 
-def _apply_granularity(self, df: pd.DataFrame) -> pd.DataFrame:
-    granularity = self.config.get("data", {}).get("granularity", "weekly")
-    if granularity == "monthly":
-        df["Date"] = pd.to_datetime(df[self.date_column])
-        df.set_index("Date", inplace=True)
-
-        # Raggruppa per mese e item
-        df = df.groupby([pd.Grouper(freq="M"), self.product_var]).agg({
-            "Sellout": "sum",  # somma le vendite del mese
-            "Prezzo": "mean",  # media dei prezzi
-            # aggiungi qui altre colonne numeriche se servono
-        }).reset_index()
-
-        # Rinomina per compatibilità
-        df[self.date_column] = df["Date"]
-        df.drop(columns=["Date"], inplace=True)
-
-    return df
-
-
-def compute_temporal_sample_weights(y_train, strategy="linear",gamma=0.005):
+def compute_temporal_sample_weights(y_train, strategy="linear", gamma=0.005):
     """
     Crea un array di pesi per dare più importanza ai dati recenti nel training set.
     - strategy: "linear" o "exponential"
@@ -274,8 +244,22 @@ def compute_temporal_sample_weights(y_train, strategy="linear",gamma=0.005):
     if strategy == "linear":
         weights = np.linspace(0.3, 1.0, n)  # peso crescente
     elif strategy == "exponential":
-        x = np.arange(n)[::-1]  # 0 = last, n-1 = first
-        weights = np.exp(-gamma * x)
+        # Prefer temporal decay by real dates (days from the most recent point).
+        # This prevents row-order bias when global training is sorted by product/date.
+        raw = pd.Series(y_train)
+        dt = pd.to_datetime(raw, errors="coerce")
+        use_datetime_decay = (not pd.api.types.is_numeric_dtype(raw)) and dt.notna().any()
+        if use_datetime_decay:
+            max_dt = dt.max()
+            age_days = (max_dt - dt).dt.days.to_numpy(dtype=float)
+            oldest = np.nanmax(age_days) if np.isfinite(age_days).any() else 0.0
+            age_days = np.nan_to_num(age_days, nan=oldest, posinf=oldest, neginf=0.0)
+            # Keep gamma semantics close to previous "per-row" behavior by using week units.
+            age_weeks = age_days / 7.0
+            weights = np.exp(-gamma * age_weeks)
+        else:
+            x = np.arange(n)[::-1]  # 0 = last, n-1 = first
+            weights = np.exp(-gamma * x)
         weights /= weights.max()  # normalizza tra 0 e 1
     else:
         raise ValueError("Strategia non supportata")
