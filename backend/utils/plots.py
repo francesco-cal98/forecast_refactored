@@ -158,14 +158,14 @@ def plot_feat_importance(importance: ArrayLike,
         df_feature_importance['importance'] >= min_importance
     ].nlargest(n_features, 'importance').sort_values('importance', ascending=True).reset_index(drop=True)
 
-    # Create horizontal bar chart
-    plt.figure(figsize=(16, 4))
-    plt.barh(df_feature_importance['column'], df_feature_importance['importance'])
-    plt.tick_params(axis='both', labelsize=10)
-    plt.title('Model Feature Importance', size=20)
-    plt.xlabel('Importance', size=15)
+    # Create horizontal bar chart and return the figure so the caller can save it
+    fig, ax = plt.subplots(figsize=(16, 4))
+    ax.barh(df_feature_importance['column'], df_feature_importance['importance'])
+    ax.tick_params(axis='both', labelsize=10)
+    ax.set_title('Model Feature Importance', size=20)
+    ax.set_xlabel('Importance', size=15)
     plt.tight_layout()
-    plt.close()
+    return fig
 
 # -----------------------------------------------------------------------
 # 5. Scenario analysis: central, optimistic, pessimistic forecasts

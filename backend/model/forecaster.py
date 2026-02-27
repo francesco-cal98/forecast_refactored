@@ -40,6 +40,7 @@ except Exception:
 
 from utils.metrics import MAPE, WAPE
 from utils.helper import compute_temporal_sample_weights
+from matplotlib import pyplot as plt
 from utils.plots import visualize_forecast_and_safety_stock, plot_feat_importance
 
 class Forecaster:
@@ -231,12 +232,17 @@ class Forecaster:
             fig.savefig(os.path.join(save_fp, f"{product_name}_stock_analysis.png"), bbox_inches="tight")
             fig_train.savefig(os.path.join(save_fp, f"{product_name}_stock_analysis_train.png"), bbox_inches="tight")
 
-        if hasattr(self.model, "feature_importances_"):
+        if hasattr(self.model, "feature_importances_") and save_fp:
             try:
-                plot_feat_importance(
+                fig_imp = plot_feat_importance(
                     importance=self.model.feature_importances_,
                     feature_names=self.regressor_names,
                 )
+                fig_imp.savefig(
+                    os.path.join(save_fp, f"{product_name}_feature_importance.png"),
+                    bbox_inches="tight",
+                )
+                plt.close(fig_imp)
             except Exception:
                 pass
 
