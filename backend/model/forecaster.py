@@ -307,9 +307,14 @@ class Forecaster:
 
         if hasattr(self.model, "feature_importances_"):
             try:
+                feat_imp_path = (
+                    os.path.join(save_fp, f"{product_name}_feature_importance.png")
+                    if save_fp else None
+                )
                 plot_feat_importance(
                     importance=self.model.feature_importances_,
                     feature_names=self.regressor_names,
+                    save_path=feat_imp_path,
                 )
             except Exception:
                 pass

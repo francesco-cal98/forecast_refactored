@@ -293,29 +293,29 @@ def visualize_forecast_and_safety_stock2(product: str,
 # -----------------------------------------------------------------------
 # 4. Plot feature importance from a predictive model
 # -----------------------------------------------------------------------
-def plot_feat_importance(importance: ArrayLike, 
-                         feature_names: ArrayLike, 
+def plot_feat_importance(importance: ArrayLike,
+                         feature_names: ArrayLike,
                          min_importance: float = 0.01,
-                         n_features: int = 10) -> None:
-    # Prepare a DataFrame for plotting
+                         n_features: int = 10,
+                         save_path: str | None = None) -> None:
     df_feature_importance = pd.DataFrame({
         'column': feature_names,
         'importance': importance
     })
-
-    # Filter and sort top features by importance
     df_feature_importance = df_feature_importance[
         df_feature_importance['importance'] >= min_importance
     ].nlargest(n_features, 'importance').sort_values('importance', ascending=True).reset_index(drop=True)
 
-    # Create horizontal bar chart
-    plt.figure(figsize=(16, 4))
-    plt.barh(df_feature_importance['column'], df_feature_importance['importance'])
-    plt.tick_params(axis='both', labelsize=10)
-    plt.title('Model Feature Importance', size=20)
-    plt.xlabel('Importance', size=15)
-    plt.tight_layout()
-    plt.close()
+    fig, ax = plt.subplots(figsize=(16, 4))
+    ax.barh(df_feature_importance['column'], df_feature_importance['importance'])
+    ax.tick_params(axis='both', labelsize=10)
+    ax.set_title('Model Feature Importance', size=20)
+    ax.set_xlabel('Importance', size=15)
+    fig.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
 
 # -----------------------------------------------------------------------
 # 5. Scenario analysis: central, optimistic, pessimistic forecasts
