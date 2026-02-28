@@ -43,6 +43,7 @@ from utils.helper import compute_temporal_sample_weights
 from utils.plots import (
     visualize_forecast_and_safety_stock,
     visualize_forecast_fanchart,
+    visualize_inventory_scenarios,
     plot_feat_importance,
 )
 
@@ -160,6 +161,18 @@ class Forecaster:
         mape = WAPE(y_test, y_pred_test_corrected)
         print(f"  WAPE (bias-corrected): {mape:.2f}%")
 
+        p50 = y_pred_test_corrected
+        p10 = None
+        p90 = None
+        try:
+            residuals_train = y_train - y_pred_train
+            if residuals_train.size > 0:
+                q10, q90 = np.nanquantile(residuals_train, [0.1, 0.9])
+                p10 = np.maximum(0, p50 + q10)
+                p90 = np.maximum(0, p50 + q90)
+        except Exception:
+            pass
+
         # Dynamic weeks-to-cover
         std_forecast = np.std(y_pred_test_corrected)
         if std_forecast < 100:
@@ -186,6 +199,7 @@ class Forecaster:
 
         # Test simulation
         current_stock = float(np.mean(stock_train[max(0, n_train - weeks_to_cover):]))
+        initial_test_stock = current_stock
         stock_test = []
         stock_test1 = []
         forecast_sell_in_test = []
@@ -211,6 +225,37 @@ class Forecaster:
 
         if stock_test:
             stock_test1[0] = float(np.mean(stock_train[max(0, n_train - weeks_to_cover):]))
+
+        demand_low = p10 if p10 is not None else p50
+        demand_base = p50
+        demand_high = p90 if p90 is not None else p50
+
+        def _simulate_stock_with_fixed_orders(demand_series):
+            s = float(initial_test_stock)
+            stock_path = []
+            lost_path = []
+            for i in range(n_test):
+                s += float(forecast_sell_in_test[i])
+                d = float(demand_series[i])
+                if d > s:
+                    lost_path.append(d - s)
+                    s = 0.0
+                else:
+                    lost_path.append(0.0)
+                    s -= d
+                stock_path.append(s)
+            return np.asarray(stock_path), np.asarray(lost_path)
+
+        stock_low, lost_sales_low = _simulate_stock_with_fixed_orders(demand_low)
+        stock_base, lost_sales_base = _simulate_stock_with_fixed_orders(demand_base)
+        stock_high, lost_sales_high = _simulate_stock_with_fixed_orders(demand_high)
+
+        total_demand_low = float(np.sum(demand_low))
+        total_demand_base = float(np.sum(demand_base))
+        total_demand_high = float(np.sum(demand_high))
+        service_level_low = 100.0 * total_demand_low / (total_demand_low + float(np.sum(lost_sales_low)) + 1e-5)
+        service_level_base = 100.0 * total_demand_base / (total_demand_base + float(np.sum(lost_sales_base)) + 1e-5)
+        service_level_high = 100.0 * total_demand_high / (total_demand_high + float(np.sum(lost_sales_high)) + 1e-5)
 
         total_demand = float(np.sum(y_test))
         total_lost = float(np.sum(lost_sales))
@@ -238,18 +283,6 @@ class Forecaster:
             required_sell_in=forecast_sell_in_train,
             stock_cover=np.zeros_like(y_pred_train),
         )
-
-        p50 = y_pred_test_corrected
-        p10 = None
-        p90 = None
-        try:
-            residuals_train = y_train - y_pred_train
-            if residuals_train.size > 0:
-                q10, q90 = np.nanquantile(residuals_train, [0.1, 0.9])
-                p10 = p50 + q10
-                p90 = p50 + q90
-        except Exception:
-            pass
         fig_fan = visualize_forecast_fanchart(
             product=product_name,
             y_true=y_test,
@@ -257,12 +290,20 @@ class Forecaster:
             p10=p10,
             p90=p90,
         )
+        fig_inventory_band = visualize_inventory_scenarios(
+            product=product_name,
+            stock_low=stock_low,
+            stock_base=stock_base,
+            stock_high=stock_high,
+            safety_stock_line=np.full_like(stock_base, safety_stock),
+        )
 
         if save_fp:
             os.makedirs(save_fp, exist_ok=True)
             fig.savefig(os.path.join(save_fp, f"{product_name}_stock_analysis.png"), bbox_inches="tight")
             fig_train.savefig(os.path.join(save_fp, f"{product_name}_stock_analysis_train.png"), bbox_inches="tight")
             fig_fan.savefig(os.path.join(save_fp, f"{product_name}_forecast_fanchart.png"), bbox_inches="tight")
+            fig_inventory_band.savefig(os.path.join(save_fp, f"{product_name}_inventory_scenario_band.png"), bbox_inches="tight")
 
         if hasattr(self.model, "feature_importances_"):
             try:
@@ -279,7 +320,16 @@ class Forecaster:
             "stock_test": stock_test_arr,
             "forecast_sell_in_test": forecast_sell_in_test,
             "lost_sales": lost_sales,
+            "stock_low": stock_low,
+            "stock_base": stock_base,
+            "stock_high": stock_high,
+            "lost_sales_low": lost_sales_low,
+            "lost_sales_base": lost_sales_base,
+            "lost_sales_high": lost_sales_high,
             "safety_stock": safety_stock,
             "service_level": service_level,
+            "service_level_low": service_level_low,
+            "service_level_base": service_level_base,
+            "service_level_high": service_level_high,
             "stock_cover": stock_cover,
         })

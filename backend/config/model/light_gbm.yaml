@@ -14,7 +14,8 @@ params:
   learning_rate: 0.05
   max_depth: 6
   num_leaves: 63
-  min_child_samples: 20
+  min_child_samples: 5
+  min_data_in_leaf: 5
   subsample: 0.8
   colsample_bytree: 0.8
   reg_alpha: 0.1

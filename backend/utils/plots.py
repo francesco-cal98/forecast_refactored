@@ -137,6 +137,57 @@ def visualize_forecast_fanchart(
     return fig
 
 
+def visualize_inventory_scenarios(
+    product: str,
+    stock_low: ArrayLike,
+    stock_base: ArrayLike,
+    stock_high: ArrayLike,
+    safety_stock_line: ArrayLike | None = None,
+):
+    stock_low = np.asarray(stock_low, dtype=float)
+    stock_base = np.asarray(stock_base, dtype=float)
+    stock_high = np.asarray(stock_high, dtype=float)
+    x = np.arange(1, len(stock_base) + 1)
+
+    band_low = np.minimum(stock_low, stock_high)
+    band_high = np.maximum(stock_low, stock_high)
+
+    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(15, 8))
+    ax.fill_between(x, band_low, band_high, color="#A9D6E5", alpha=0.35, label="Inventory band (LOW-HIGH)")
+    ax.plot(x, stock_low, color="#2A9D8F", linewidth=2, linestyle="--", label="LOW demand stock")
+    ax.plot(x, stock_base, color="#1D3557", linewidth=2, label="BASE demand stock")
+    ax.plot(x, stock_high, color="#E76F51", linewidth=2, linestyle="-.", label="HIGH demand stock")
+
+    if safety_stock_line is not None:
+        ss = np.asarray(safety_stock_line, dtype=float)
+        if ss.size == 1:
+            ss = np.full_like(stock_base, float(ss[0]))
+        ax.plot(x, ss, color="#6D6875", linewidth=1.8, linestyle=":", label="Safety stock")
+
+    high_stockout_idx = np.where(stock_high <= 0)[0]
+    if high_stockout_idx.size > 0:
+        i0 = int(high_stockout_idx[0])
+        ax.scatter([x[i0]], [stock_high[i0]], color="red", s=50, zorder=5)
+        ax.annotate(
+            f"First HIGH stockout: week {x[i0]}",
+            xy=(x[i0], stock_high[i0]),
+            xytext=(10, 10),
+            textcoords="offset points",
+            color="red",
+            fontsize=10,
+        )
+
+    ax.set_title(f"Inventory Scenario Band - {product}", fontsize=16, fontweight="bold")
+    ax.set_xlabel("Week", fontsize=14)
+    ax.set_ylabel("Stock", fontsize=14)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    ax.legend(loc="best")
+    plt.tight_layout()
+    plt.close()
+    return fig
+
+
 def plot_coverage(
     product: str,
     coverage_global: float,

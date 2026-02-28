@@ -6,7 +6,19 @@
       "Bash(grep:*)",
       "Bash(find:*)",
       "Bash(python -m src.forecasting.regulatory.ingest.run_ingest:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(for f in ALPHA BETA CHARLIE DELTA)",
+      "Bash(do)",
+      "Bash(echo \"=== $f cut-level ===\")",
+      "Bash(for c in 1 2)",
+      "Bash(fp=\"c:\\\\Users\\\\fraca\\\\forecast_refactored\\\\.claude\\\\worktrees\\\\gracious-heisenberg/outputs/backtest/$f/cut_$c/preds_$f_cut$c.csv\")",
+      "Bash([ -f \"$fp\" ])",
+      "Bash(python3 -c \":*)",
+      "Bash(done)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(tee /tmp/backtest_out.txt)",
+      "Bash(# Find where the new run actually wrote output files find \"\"c:/Users/fraca/forecast_refactored/.claude/worktrees/gracious-heisenberg\"\" -name \"\"preds_ALPHA_cut3.csv\"\" -o -name \"\"preds_ALPHA_cut4.csv\"\" # Also check all preds CSVs modified in last 30 min find \"\"c:/Users/fraca/forecast_refactored/.claude/worktrees/gracious-heisenberg\"\" -name \"\"preds_*.csv\"\" -newer \"\"c:/Users/fraca/forecast_refactored/.claude/worktrees/gracious-heisenberg/backend/outputs/2026-02-28/16-40-45/main.log\"\")",
+      "Bash(python3 -:*)"
     ]
   }
 }

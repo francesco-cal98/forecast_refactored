@@ -5,6 +5,7 @@ matplotlib.use("Agg")
 
 from backend.utils.plots import (
     visualize_forecast_fanchart,
+    visualize_inventory_scenarios,
     plot_coverage,
     plot_error_vs_horizon,
 )
@@ -49,3 +50,16 @@ def test_plot_coverage_and_error_vs_horizon_smoke(tmp_path):
 
     assert cov_path.exists()
     assert err_path.exists()
+
+
+def test_visualize_inventory_scenarios_smoke(tmp_path):
+    fig = visualize_inventory_scenarios(
+        product="TEST_SKU",
+        stock_low=np.array([40.0, 32.0, 28.0, 20.0]),
+        stock_base=np.array([45.0, 35.0, 25.0, 15.0]),
+        stock_high=np.array([50.0, 36.0, 18.0, 0.0]),
+        safety_stock_line=np.array([10.0, 10.0, 10.0, 10.0]),
+    )
+    out = tmp_path / "inventory_band.png"
+    fig.savefig(out)
+    assert out.exists()

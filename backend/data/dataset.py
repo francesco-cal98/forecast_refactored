@@ -281,13 +281,14 @@ class SalesDataset:
         for col, trend_vals in self.prepare_config.get("trend", {}).get(
             self.granularity, {}
         ).items():
-            wins = trend_vals if isinstance(trend_vals, (list, tuple)) else [trend_vals]
+            wins = [trend_vals] if isinstance(trend_vals, int) else list(trend_vals)
             for w in wins:
+                w = int(w)  # ensure plain int — OmegaConf ints fail pandas min_periods
                 new_col = f"{col}_trend_{w}{unit}"
                 df[new_col] = (
                     df.groupby(self.product_var)[col]
                     .transform(
-                        lambda x: x.rolling(window=w, min_periods=w).apply(_slope_np, raw=True).shift(1)
+                        lambda x, _w=w: x.rolling(window=_w, min_periods=_w).apply(_slope_np, raw=True).shift(1)
                     )
                 )
 
@@ -322,6 +323,20 @@ class SalesDataset:
                 df.groupby(self.product_var)[self.target_column]
                 .transform(lambda s: ema_half_life(s.shift(1), h))
             )
+
+        # ---- Weeks since rolling peak (wsp) ----
+        # How many weeks ago was the highest demand in the trailing window?
+        # Gives DELTA/CHARLIE a direct "how far past the peak are we?" signal.
+        for _wsp_w in [12, 26]:
+            _wsp_col = f"{self.target_column}_wsp_{_wsp_w}W"
+            def _weeks_since_peak(s: pd.Series, w: int = _wsp_w) -> pd.Series:
+                arr = s.values
+                result = np.full(len(arr), np.nan)
+                for i in range(1, len(arr)):
+                    window = arr[max(0, i - w):i]  # strictly before current row — no leakage
+                    result[i] = float((len(window) - 1) - int(np.argmax(window)))
+                return pd.Series(result, index=s.index)
+            df[_wsp_col] = df.groupby(self.product_var)[self.target_column].transform(_weeks_since_peak)
 
         # ---- Z-score per-serie (su lag semplici del target) ----
         for w in [8, 26]:

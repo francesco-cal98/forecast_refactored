@@ -333,11 +333,14 @@ class BacktestRunner:
                 # Immagini create da stock_analysis:
                 png_test = os.path.join(cut_dir, f"{item}_stock_analysis.png")
                 png_train = os.path.join(cut_dir, f"{item}_stock_analysis_train.png")
+                png_inventory_band = os.path.join(cut_dir, f"{item}_inventory_scenario_band.png")
 
                 if os.path.exists(png_test):
                     mlflow.log_artifact(png_test, artifact_path=f"{item}/cut_{cut_idx}")
                 if os.path.exists(png_train):
                     mlflow.log_artifact(png_train, artifact_path=f"{item}/cut_{cut_idx}")
+                if os.path.exists(png_inventory_band):
+                    mlflow.log_artifact(png_inventory_band, artifact_path=f"{item}/cut_{cut_idx}")
 
                 # Preds CSV e Stock XLSX
                 mlflow.log_artifact(preds_csv_fp, artifact_path=f"{item}/cut_{cut_idx}")
