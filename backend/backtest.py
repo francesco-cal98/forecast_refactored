@@ -61,6 +61,17 @@ class BacktestRunner:
             return pd.Timedelta(days=int(s[:-1]))
         return pd.to_timedelta(s)
 
+    @staticmethod
+    def _compute_pooled_wape(abs_error_sum: float, abs_actual_sum: float) -> Tuple[float, bool]:
+        """
+        Compute pooled WAPE across all evaluation points:
+        100 * sum(|y - yhat|) / sum(|y|).
+        Returns (value, valid_flag). If denominator is 0, returns (NaN, False).
+        """
+        if abs_actual_sum == 0:
+            return float("nan"), False
+        return float(100.0 * abs_error_sum / abs_actual_sum), True
+
     def _build_cuts(self, target_dates: pd.Series, test_len_str: str, n_cuts: int) -> List[BacktestCut]:
         test_len = self._parse_td(test_len_str)
         t_max = pd.to_datetime(target_dates.max())
@@ -116,6 +127,8 @@ class BacktestRunner:
         # Artefatti complessivi per questo item
         results: List[BacktestResult] = []
         artifacts_rows = []
+        abs_error_sum = 0.0
+        abs_actual_sum = 0.0
 
         for cut_idx, cut in enumerate(cuts, start=1):
             # 2) Prepara il dataset per questo cut
@@ -147,6 +160,7 @@ class BacktestRunner:
             Xtr_num = ds.X_train.select_dtypes(include=[np.number])
             Xte_num = ds.X_test.select_dtypes(include=[np.number])
 
+<<<<<<< HEAD
             # Use Forecaster.fit() so temporal sample weights are applied correctly
             recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
             fore.fit(
@@ -155,6 +169,9 @@ class BacktestRunner:
                 dates=getattr(ds, "train_dates", None),
                 recency_gamma=recency_gamma,
             )
+=======
+            fore.fit(Xtr_num, ds.y_train, dates=getattr(ds, "train_dates", None))
+>>>>>>> 203ab21 (re-working-on-the repo)
 
             # pred test
             yhat_test, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)
@@ -176,6 +193,8 @@ class BacktestRunner:
                 "SMAPE": float(SMAPE(y_true, yhat_test)),
                 "MASE": float(MASE(y_true, yhat_test)),
             }
+            abs_error_sum += float(np.sum(np.abs(y_true - yhat_test)))
+            abs_actual_sum += float(np.sum(np.abs(y_true)))
 
             # 5) Stock analysis per cut: cartella dedicata
             cut_dir = os.path.join(self.output_dir, f"{item}", f"cut_{cut_idx}")
@@ -264,11 +283,14 @@ class BacktestRunner:
 
         # 9) Aggregazione per item
         agg = pd.DataFrame([r.metrics for r in results])
+        wape_pooled, wape_pooled_valid = self._compute_pooled_wape(abs_error_sum, abs_actual_sum)
         summary = {
             "item": item,
             "cuts": len(results),
             "MAPE_mean": float(agg["MAPE"].mean()), "MAPE_std": float(agg["MAPE"].std(ddof=1)),
-            "WAPE_mean": float(agg["WAPE"].mean()), "WAPE_std": float(agg["WAPE"].std(ddof=1)),
+            "WAPE_mean": wape_pooled, "WAPE_std": float(agg["WAPE"].std(ddof=1)),
+            "WAPE_pooled": wape_pooled, "WAPE_pooled_valid": wape_pooled_valid,
+            "WAPE_mean_of_cuts": float(agg["WAPE"].mean()),
             "SMAPE_mean": float(agg["SMAPE"].mean()), "SMAPE_std": float(agg["SMAPE"].std(ddof=1)),
             "MASE_mean": float(agg["MASE"].mean()), "MASE_std": float(agg["MASE"].std(ddof=1)),
         }
@@ -282,11 +304,15 @@ class BacktestRunner:
             "cuts": [r.__dict__ for r in results],
             "summary": summary,
             "preds_csv": item_preds_csv,
+            "wape_abs_error_sum": abs_error_sum,
+            "wape_abs_actual_sum": abs_actual_sum,
         }
 
     def run_all(self, items: List[str]) -> Dict[str, Any]:
         run_payload = {"items": [], "global_summary": {}}
         all_summaries = []
+        global_abs_error_sum = 0.0
+        global_abs_actual_sum = 0.0
 
         with mlflow.start_run(run_name="backtest_multi_item"):
             mlflow.log_params({
@@ -307,16 +333,22 @@ class BacktestRunner:
                 res = self.run_for_item(it)
                 run_payload["items"].append(res)
                 all_summaries.append(res["summary"])
+                global_abs_error_sum += float(res.get("wape_abs_error_sum", 0.0))
+                global_abs_actual_sum += float(res.get("wape_abs_actual_sum", 0.0))
                 mlflow.log_metrics({f"{it}_MAPE_mean": res["summary"]["MAPE_mean"]})
 
             # global summary
             gdf = pd.DataFrame(all_summaries)
+            global_wape_pooled, global_wape_pooled_valid = self._compute_pooled_wape(global_abs_error_sum, global_abs_actual_sum)
             global_summary = {
                 "items": len(items),
                 "MAPE_mean": float(gdf["MAPE_mean"].mean()),
                 "MAPE_std": float(gdf["MAPE_mean"].std(ddof=1)),
-                "WAPE_mean": float(gdf["WAPE_mean"].mean()),
+                "WAPE_mean": global_wape_pooled,
                 "WAPE_std": float(gdf["WAPE_mean"].std(ddof=1)),
+                "WAPE_pooled": global_wape_pooled,
+                "WAPE_pooled_valid": global_wape_pooled_valid,
+                "WAPE_mean_of_items": float(gdf["WAPE_mean"].mean()),
                 "SMAPE_mean": float(gdf["SMAPE_mean"].mean()),
                 "SMAPE_std": float(gdf["SMAPE_mean"].std(ddof=1)),
                 "MASE_mean": float(gdf["MASE_mean"].mean()),

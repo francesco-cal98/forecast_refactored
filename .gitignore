@@ -3,4 +3,8 @@ outputs/
 .*log
 venv
 mlruns/
+<<<<<<< HEAD
 *.parquet
+=======
+backend/results/
+>>>>>>> 203ab21 (re-working-on-the repo)
