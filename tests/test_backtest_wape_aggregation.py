@@ -12,7 +12,7 @@ def test_pooled_wape_differs_from_mean_of_cut_wapes():
 
     assert valid is True
     assert mean_of_cut_wapes != pooled_wape
-    assert pooled_wape == np.float64(11.818181818181818)
+    assert np.isclose(pooled_wape, 11.818181818181818, rtol=1e-12, atol=0.0)
 
 
 def test_pooled_wape_handles_zero_actual_sum():
