@@ -35,7 +35,7 @@ def plot_forecast_vs_actual(y: ArrayLike,
     plt.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.show()
+    plt.close()
 
 # -----------------------------------------------------------------------
 # 2. Visualize forecast + safety stock + stock level + sell-in strategy
@@ -315,7 +315,7 @@ def plot_feat_importance(importance: ArrayLike,
     plt.title('Model Feature Importance', size=20)
     plt.xlabel('Importance', size=15)
     plt.tight_layout()
-    plt.show()
+    plt.close()
 
 # -----------------------------------------------------------------------
 # 5. Scenario analysis: central, optimistic, pessimistic forecasts
@@ -355,4 +355,4 @@ def plot_scenarios(product: str,
     plt.xlabel("Time")
     plt.ylabel("Predicted Value")
     plt.legend()
-    plt.show()
+    plt.close()

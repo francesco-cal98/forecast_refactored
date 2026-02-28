@@ -1,0 +1,120 @@
+defaults:
+  - model: light_gbm
+  - data: praenova           # ← praenova data source (area-level sheets only)
+
+# Opzioni extra per SalesDataset
+dataset_config:
+  loader: praenova           # ← triggers load_area_panel() in dataset.py
+  base_year: 2023            # Year 1 in xlsx → ISO year 2023
+  training_mode: local       # "local" = one model per series | "global" = pool all series
+  known_future_promos: false
+  market_lags: [1, 4, 8, 12]
+  market_trend_windows: [4, 8]
+  per_series_scaling:
+    enabled: true
+    method: zscore
+    windows: [8, 26]
+
+prepare:
+  lag:
+    weekly:
+      ${data.target_column}: [1, 2, 3, 4, 5, 26, 52]
+    monthly:
+      ${data.target_column}: [1, 2, 3, 6, 12]
+
+  percentage:
+    weekly:
+      ${data.target_column}: [1, 2, 3, 4, 52]
+    monthly:
+      ${data.target_column}: [1, 2, 3, 12]
+
+  rolling:
+    max:
+      weekly:
+        ${data.target_column}: [2, 3, 5, 10]
+      monthly:
+        ${data.target_column}: [1]
+    min:
+      weekly:
+        ${data.target_column}: [2, 3, 5, 10]
+      monthly:
+        ${data.target_column}: [1]
+    std:
+      weekly:
+        ${data.target_column}: [3, 5]
+      monthly:
+        ${data.target_column}: [1]
+    median:
+      weekly:
+        ${data.target_column}: [5, 10]
+      monthly:
+        ${data.target_column}: [1, 2, 3]
+
+  trend:
+    weekly:
+      ${data.target_column}: [5, 8, 13]
+
+column_selection:
+  prefixes: []
+  suffixes:
+    - "W"
+    - "sin"
+    - "cos"
+    - "trend"
+    - "percentage"
+    - "season"
+    - "Settimana"
+    - "Item"
+    - "product_group"
+    - "PERIOD_TAG"
+  regex:
+    - "^market_sum_ex_lag\\d+$"
+    - "^market_mean_ex_lag\\d+$"
+    - "^market_trend_ex_w\\d+$"
+    - "_rolling_.*_\\d+[WM]$"
+    - "week_number$"
+    - "is_peak_season$"
+    - "^month$"
+    - "^quarter$"
+    - "^fourier_(sin|cos)_k\\d+$"
+    - f"{data.date_column}_sin$"
+    - f"{data.date_column}_cos$"
+    - f"^{data.target_column}_\\d+[WM]$"
+    - "^Prezzo_\\d+[WM]$"
+    - "^product_age_w$"
+    - "^${data.target_column}_ema_h\\d+$"
+    - "^price_(gap|rel)_1W$"
+    - "(?i).*promo.*"           # captures promo_flag, promo_discount_pct
+    - "^competitor_price_eur$"  # ← praenova-specific: raw competitor price
+
+  to_exclude:
+    - "^market_sum_ex$"
+    - "^market_mean_ex$"
+  callables: []
+
+train:
+  # praenova spans W1 2023 → W52 2024 (104 weeks).
+  # 2 cuts × 8w test = 16w held out; train_len=88w covers the rest.
+  train_len: "88w"
+  test_len:  "8w"
+  boundary: "2024-10-01"    # default for single-run mode
+
+cv:
+  n_folds: 2
+  val_len: "8w"
+  scoring: "neg_mean_absolute_error"
+  recency_gamma: 0.08
+
+stock:
+  safety_stock_window: 4
+  lead_time: 1
+  service_level: 0.95
+
+mlflow:
+  tracking_uri: "file:./mlruns"
+  experiment_name: "praenova-backtest"
+
+backtest:
+  enabled: true
+  n_cuts: 2
+  output_dir: "outputs/backtest_praenova"

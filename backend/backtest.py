@@ -4,6 +4,7 @@ import os, json
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Optional
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import mlflow
@@ -384,6 +385,7 @@ class BacktestRunner:
         fig_err = plot_error_vs_horizon(item, abs_error_by_h)
         error_plot_fp = os.path.join(item_dir, f"{item}_error_vs_horizon.png")
         fig_err.savefig(error_plot_fp, bbox_inches="tight")
+        plt.close(fig_err)
 
         coverage_plot_fp = None
         if coverage_available:
@@ -395,6 +397,7 @@ class BacktestRunner:
             )
             coverage_plot_fp = os.path.join(item_dir, f"{item}_coverage_10_90.png")
             fig_cov.savefig(coverage_plot_fp, bbox_inches="tight")
+            plt.close(fig_cov)
 
         summary = {
             "item": item,

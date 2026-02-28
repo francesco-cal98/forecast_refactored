@@ -1,0 +1,14 @@
+# Data source: praenova_validation_2y.xlsx
+# Sheets matching ^Product_\d+_Area\d+$ are loaded; _all sheets are excluded.
+# Parsed by: load_area_panel() in prototype/praenova/io.py
+# Output columns: series_id, date, sales_units, Prezzo (renamed from price_eur),
+#                 competitor_price_eur, promo_flag, promo_discount_pct
+
+file_path: "C:\\Users\\fraca\\forecast_refactored\\praenova_validation_2y.xlsx"
+separator: ";"                  # unused for xlsx, kept for interface parity
+date_column: "date"
+target_column: "sales_units"
+product_column: "series_id"    # e.g. Product_01_Area1
+nr_horizon: 1
+product_name: "Product_01_Area1"   # default for single-run mode
+granularity: "weekly"

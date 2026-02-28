@@ -77,7 +77,17 @@ class SalesDataset:
         if csv_file.endswith(".csv"):
             self.dataset = pd.read_csv(csv_file, sep=separator)
         elif csv_file.endswith(".xlsx") or csv_file.endswith(".xls"):
-            self.dataset = load_weekly_data_with_prices(filepath=csv_file)
+            if self.config.get("loader") == "praenova":
+                from prototype.praenova.io import load_area_panel
+                base_year = int(self.config.get("base_year", 2023))
+                self.dataset = load_area_panel(path=csv_file, base_year=base_year)
+                # Rename price_eur → Prezzo so existing price-feature code fires unchanged
+                self.dataset = self.dataset.rename(columns={"price_eur": "Prezzo"})
+                # Drop promo_type: it uses pd.StringDtype which breaks fillna(0) downstream.
+                # promo_flag (binary int) is the usable signal and is kept.
+                self.dataset = self.dataset.drop(columns=["promo_type"], errors="ignore")
+            else:
+                self.dataset = load_weekly_data_with_prices(filepath=csv_file)
         else:
             raise ValueError("Unsupported file extension. Use .csv or .xlsx")
 
@@ -461,15 +471,26 @@ class SalesDataset:
             f"  test_until={end_test_date.date()}"
         )
 
-        # Masks: TRAIN = all other series + past of target; TEST = future of target only
-        train_mask = (
-            (df[self.product_var] != product_to_use)
-            | (
+        # Masks: TEST = future of target series only (same in both modes)
+        # TRAIN depends on training_mode:
+        #   "global" (default) — all other series + past of target (multi-series pool)
+        #   "local"            — only past of target series (univariate)
+        _training_mode = self.config.get("training_mode", "global")
+        if _training_mode == "local":
+            train_mask = (
                 (df[self.product_var] == product_to_use)
                 & (df[self.date_column] < boundary_date)
                 & (df[self.date_column] >= begin_train_date)
             )
-        )
+        else:
+            train_mask = (
+                (df[self.product_var] != product_to_use)
+                | (
+                    (df[self.product_var] == product_to_use)
+                    & (df[self.date_column] < boundary_date)
+                    & (df[self.date_column] >= begin_train_date)
+                )
+            )
 
         test_mask = (
             (df[self.product_var] == product_to_use)
@@ -487,6 +508,11 @@ class SalesDataset:
         )
         if y_col not in sel_cols:
             sel_cols.append(y_col)
+        # Ensure the groupby and date columns survive column selection regardless
+        # of what the config includes (mirrors the existing y_col guard above).
+        for _must_keep in [self.product_var, self.date_column]:
+            if _must_keep not in sel_cols:
+                sel_cols.append(_must_keep)
         df = df[sel_cols]
 
         # Split
