@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from backend.model.forecaster import Forecaster
+from backend.model import forecaster as forecaster_module
 
 def test_forecaster_predict_shape():
     X = np.random.rand(10, 3)
@@ -49,3 +50,31 @@ def test_fit_falls_back_when_sample_weight_not_supported():
     f.fit(X, y, sample_weight=w)
 
     assert f.model.fit_called is True
+
+
+def test_bias_correction_clips_negative_predictions(monkeypatch):
+    class DummyFig:
+        def savefig(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(forecaster_module, "visualize_forecast_and_safety_stock", lambda *args, **kwargs: DummyFig())
+    monkeypatch.setattr(forecaster_module, "plot_feat_importance", lambda *args, **kwargs: None)
+
+    f = Forecaster()
+    f.model = object()
+
+    y_test = pd.Series([5.0, 6.0, 7.0])
+    y_pred_test = pd.Series([1.0, 1.0, 1.0])
+    y_train = pd.Series([10.0, 10.0, 10.0])
+    y_pred_train = pd.Series([20.0, 20.0, 20.0])  # positive bias => corrected preds would be negative without clipping
+
+    result = f.stock_analysis(
+        y_test=y_test,
+        y_pred_test=y_pred_test,
+        y_train=y_train,
+        y_pred_train=y_pred_train,
+        save_fp="",
+    )
+
+    assert (result["y_pred_test"] >= 0).all()
+    assert result["y_pred_test"].shape == y_pred_test.shape

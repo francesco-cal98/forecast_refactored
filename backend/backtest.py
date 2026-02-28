@@ -160,7 +160,6 @@ class BacktestRunner:
             Xtr_num = ds.X_train.select_dtypes(include=[np.number])
             Xte_num = ds.X_test.select_dtypes(include=[np.number])
 
-<<<<<<< HEAD
             # Use Forecaster.fit() so temporal sample weights are applied correctly
             recency_gamma = float(getattr(self.cfg.cv, "recency_gamma", 0.08))
             fore.fit(
@@ -169,9 +168,6 @@ class BacktestRunner:
                 dates=getattr(ds, "train_dates", None),
                 recency_gamma=recency_gamma,
             )
-=======
-            fore.fit(Xtr_num, ds.y_train, dates=getattr(ds, "train_dates", None))
->>>>>>> 203ab21 (re-working-on-the repo)
 
             # pred test
             yhat_test, _ = fore.predict(ds.X_test, ds.y_test, error_fun=MAPE)

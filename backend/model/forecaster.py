@@ -24,32 +24,6 @@
 # =============================================================================
 
 import os
-<<<<<<< HEAD
-=======
-import json
-import inspect
-import numpy as np
-import pandas as pd
-
-from typing import List, Tuple, Optional, Dict
-
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.model_selection import GridSearchCV
-from sklearn import svm
-
-try:
-    from lightgbm import LGBMRegressor
-    _HAS_LGBM = True
-except Exception:
-    _HAS_LGBM = False
-
-from utils.metrics import MAPE,WAPE
-from utils.plots import visualize_forecast_and_safety_stock, plot_feat_importance
-from utils.helper import compute_temporal_sample_weights, parse_time_string
-from scipy import stats
-
-
->>>>>>> 203ab21 (re-working-on-the repo)
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict
@@ -105,28 +79,11 @@ class Forecaster:
             dates = pd.to_datetime(dates, errors="coerce")
             # Compute exponential decay weights: recent rows get weight~1, old rows get weight~0
             weights = compute_temporal_sample_weights(dates, strategy="exponential", gamma=recency_gamma)
-<<<<<<< HEAD
         try:
             # Fix: pass computed weights instead of hardcoded None
             self.model.fit(X_num, y_train, sample_weight=weights)
         except TypeError:
             # SVR does not support sample_weight — fall back silently
-=======
-
-        fit_params = inspect.signature(self.model.fit).parameters
-        supports_sample_weight = (
-            "sample_weight" in fit_params
-            or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in fit_params.values())
-        )
-
-        # Apply weights only when available and explicitly supported by estimator.fit.
-        # This keeps backward compatibility for estimators that do not expose sample_weight.
-        if weights is not None and supports_sample_weight:
-            self.model.fit(X_num, y_train, sample_weight=weights)
-            print("[Forecaster.fit] sample_weight applied=True")
-        else:
-            # Fallback path: estimators without sample_weight keep previous behavior.
->>>>>>> 203ab21 (re-working-on-the repo)
             self.model.fit(X_num, y_train)
             print(f"[Forecaster.fit] sample_weight applied=False (provided={weights is not None})")
         self.regressor_names = getattr(self.model, "feature_names_in_", X_num.columns.to_numpy())
@@ -195,7 +152,7 @@ class Forecaster:
             print("  WARNING: tracking signal above threshold (|ts| > 4) — systematic bias detected")
 
         # Bias correction on test preds
-        y_pred_test_corrected = y_pred_test - last_bias
+        y_pred_test_corrected = np.maximum(0, y_pred_test - last_bias)
         mape = WAPE(y_test, y_pred_test_corrected)
         print(f"  WAPE (bias-corrected): {mape:.2f}%")
 
