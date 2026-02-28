@@ -92,6 +92,50 @@ def visualize_forecast_and_safety_stock(product: str,
     
     return fig
 
+
+def visualize_forecast_fanchart(
+    product: str,
+    y_true: ArrayLike,
+    p50: ArrayLike,
+    p10: ArrayLike | None = None,
+    p90: ArrayLike | None = None,
+    save_path: str | None = None,
+):
+    y_true = np.asarray(y_true)
+    p50 = np.asarray(p50)
+    x = np.arange(1, len(p50) + 1)
+
+    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(15, 8))
+
+    ax.plot(x, y_true, label="Actual", color="#2F6690", linewidth=2)
+    ax.plot(x, p50, label="P50", color="#F26419", linewidth=2, linestyle="--")
+
+    if p10 is not None and p90 is not None:
+        p10 = np.asarray(p10)
+        p90 = np.asarray(p90)
+        lower = np.minimum(p10, p90)
+        upper = np.maximum(p10, p90)
+
+        ax.fill_between(x, lower, upper, color="#F6AE2D", alpha=0.25, label="P10-P90 band")
+
+        outside = (y_true < lower) | (y_true > upper)
+        if np.any(outside):
+            ax.scatter(x[outside], y_true[outside], color="red", s=35, label="Outside P10-P90")
+
+    ax.set_title(f"Probabilistic Forecast (Fan Chart) - {product}", fontsize=16, fontweight="bold")
+    ax.set_xlabel("Time", fontsize=14)
+    ax.set_ylabel("Demand", fontsize=14)
+    ax.legend(loc="best")
+    ax.grid(True, linestyle="--", alpha=0.6)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight")
+
+    plt.close()
+    return fig
+
 # -----------------------------------------------------------------------
 # 3. Second visualization: historical vs forecasted + export to CSV
 # -----------------------------------------------------------------------

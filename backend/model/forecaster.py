@@ -40,7 +40,11 @@ except Exception:
 
 from utils.metrics import MAPE, WAPE
 from utils.helper import compute_temporal_sample_weights
-from utils.plots import visualize_forecast_and_safety_stock, plot_feat_importance
+from utils.plots import (
+    visualize_forecast_and_safety_stock,
+    visualize_forecast_fanchart,
+    plot_feat_importance,
+)
 
 class Forecaster:
     def __init__(self, model_name: str = "random_forest", params: Optional[Dict] = None):
@@ -235,10 +239,30 @@ class Forecaster:
             stock_cover=np.zeros_like(y_pred_train),
         )
 
+        p50 = y_pred_test_corrected
+        p10 = None
+        p90 = None
+        try:
+            residuals_train = y_train - y_pred_train
+            if residuals_train.size > 0:
+                q10, q90 = np.nanquantile(residuals_train, [0.1, 0.9])
+                p10 = p50 + q10
+                p90 = p50 + q90
+        except Exception:
+            pass
+        fig_fan = visualize_forecast_fanchart(
+            product=product_name,
+            y_true=y_test,
+            p50=p50,
+            p10=p10,
+            p90=p90,
+        )
+
         if save_fp:
             os.makedirs(save_fp, exist_ok=True)
             fig.savefig(os.path.join(save_fp, f"{product_name}_stock_analysis.png"), bbox_inches="tight")
             fig_train.savefig(os.path.join(save_fp, f"{product_name}_stock_analysis_train.png"), bbox_inches="tight")
+            fig_fan.savefig(os.path.join(save_fp, f"{product_name}_forecast_fanchart.png"), bbox_inches="tight")
 
         if hasattr(self.model, "feature_importances_"):
             try:
