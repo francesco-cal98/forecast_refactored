@@ -1,22 +1,9 @@
 defaults:
   - model: random_forest
-<<<<<<< HEAD
   # Switch data source here — no other changes needed:
   #   xlsx_sample  → TEST DATI SAMPLE.xlsx  (products: ALPHA, BETA, DELTA, CHARLIE)
   #   csv_history  → History_SellIn_SellOut.csv
   - data: xlsx_sample
-=======
-
-data:
-  file_path: "C:\\Users\\fraca\\forecast_refactored\\TEST DATI SAMPLE.xlsx"
-  separator: ";"
-  date_column: "PERIOD_TAG"
-  target_column: "Sellout"
-  product_column: "product_group"
-  nr_horizon: 1           # <-- POSITIVO: 1 settimana avanti
-  product_name: "Product_01"
-  granularity: "weekly"
->>>>>>> 203ab21 (re-working-on-the repo)
 
 # Opzioni extra per SalesDataset (nuove)
 dataset_config:

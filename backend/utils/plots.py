@@ -136,6 +136,65 @@ def visualize_forecast_fanchart(
     plt.close()
     return fig
 
+
+def plot_coverage(
+    product: str,
+    coverage_global: float,
+    expected: float = 0.80,
+    coverage_by_h: ArrayLike | None = None,
+):
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.axhline(expected, color="#B22222", linestyle="--", linewidth=2, label=f"Expected ({expected:.2f})")
+
+    if coverage_by_h is not None:
+        cov = np.asarray(coverage_by_h, dtype=float)
+        h = np.arange(1, len(cov) + 1)
+        ax.plot(h, cov, color="#1F77B4", linewidth=2, marker="o", label="Coverage by horizon")
+        ax.set_xlabel("Horizon (h)")
+    else:
+        cov = np.asarray([coverage_global], dtype=float)
+        h = np.asarray([1])
+        ax.bar(h, cov, color="#1F77B4", alpha=0.85, label="Coverage")
+        ax.set_xticks([1])
+        ax.set_xticklabels(["Global"])
+        ax.set_xlabel("")
+
+    if not np.isnan(coverage_global):
+        ax.text(
+            0.02,
+            0.95,
+            f"Global coverage: {coverage_global:.3f}",
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=11,
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"),
+        )
+
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Coverage")
+    ax.set_title(f"P10-P90 Coverage - {product}")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend(loc="best")
+    plt.tight_layout()
+    plt.close()
+    return fig
+
+
+def plot_error_vs_horizon(product: str, abs_error_by_h: ArrayLike):
+    err = np.asarray(abs_error_by_h, dtype=float)
+    h = np.arange(1, len(err) + 1)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(h, err, color="#2E8B57", marker="o", linewidth=2)
+    ax.set_xlabel("Horizon (h)")
+    ax.set_ylabel("Mean Absolute Error")
+    ax.set_title(f"Absolute Error vs Horizon - {product}")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    plt.tight_layout()
+    plt.close()
+    return fig
+
 # -----------------------------------------------------------------------
 # 3. Second visualization: historical vs forecasted + export to CSV
 # -----------------------------------------------------------------------

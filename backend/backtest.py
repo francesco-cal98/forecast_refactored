@@ -10,6 +10,7 @@ import mlflow
 
 from utils.helper import resolve_config_refs,resolve_target_keys
 from utils.metrics import MAPE,WAPE,MASE,SMAPE  # già nel tuo repo
+from utils.plots import plot_coverage, plot_error_vs_horizon
 
 
 @dataclass
@@ -72,6 +73,57 @@ class BacktestRunner:
             return float("nan"), False
         return float(100.0 * abs_error_sum / abs_actual_sum), True
 
+    @staticmethod
+    def _aggregate_probabilistic_diagnostics(
+        y_true_cuts: List[np.ndarray],
+        p50_cuts: List[np.ndarray],
+        p10_cuts: List[Optional[np.ndarray]],
+        p90_cuts: List[Optional[np.ndarray]],
+    ) -> Dict[str, Any]:
+        abs_error_by_h_values: List[List[float]] = []
+        coverage_by_h_values: List[List[float]] = []
+        coverage_hits: List[float] = []
+
+        for y_true, p50, p10, p90 in zip(y_true_cuts, p50_cuts, p10_cuts, p90_cuts):
+            y_true = np.asarray(y_true)
+            p50 = np.asarray(p50)
+
+            abs_errors = np.abs(y_true - p50)
+            for h_idx, err in enumerate(abs_errors):
+                if h_idx >= len(abs_error_by_h_values):
+                    abs_error_by_h_values.append([])
+                abs_error_by_h_values[h_idx].append(float(err))
+
+            if p10 is not None and p90 is not None:
+                lower = np.minimum(np.asarray(p10), np.asarray(p90))
+                upper = np.maximum(np.asarray(p10), np.asarray(p90))
+                in_band = ((y_true >= lower) & (y_true <= upper)).astype(float)
+
+                for h_idx, hit in enumerate(in_band):
+                    if h_idx >= len(coverage_by_h_values):
+                        coverage_by_h_values.append([])
+                    coverage_by_h_values[h_idx].append(float(hit))
+                coverage_hits.extend(in_band.tolist())
+
+        abs_error_by_h = [
+            float(np.mean(vals)) if len(vals) > 0 else float("nan")
+            for vals in abs_error_by_h_values
+        ]
+        coverage_by_h = (
+            [float(np.mean(vals)) if len(vals) > 0 else float("nan") for vals in coverage_by_h_values]
+            if len(coverage_by_h_values) > 0
+            else None
+        )
+        coverage_available = len(coverage_hits) > 0
+        coverage_10_90 = float(np.mean(coverage_hits)) if coverage_available else float("nan")
+
+        return {
+            "abs_error_by_h": abs_error_by_h,
+            "coverage_by_h": coverage_by_h,
+            "coverage_10_90": coverage_10_90,
+            "coverage_available": coverage_available,
+        }
+
     def _build_cuts(self, target_dates: pd.Series, test_len_str: str, n_cuts: int) -> List[BacktestCut]:
         test_len = self._parse_td(test_len_str)
         t_max = pd.to_datetime(target_dates.max())
@@ -129,6 +181,10 @@ class BacktestRunner:
         artifacts_rows = []
         abs_error_sum = 0.0
         abs_actual_sum = 0.0
+        y_true_cuts: List[np.ndarray] = []
+        p50_cuts: List[np.ndarray] = []
+        p10_cuts: List[Optional[np.ndarray]] = []
+        p90_cuts: List[Optional[np.ndarray]] = []
 
         for cut_idx, cut in enumerate(cuts, start=1):
             # 2) Prepara il dataset per questo cut
@@ -181,6 +237,22 @@ class BacktestRunner:
             yhat_train = yhat_train * _scale
 
             y_true = np.asarray(ds.y_test) * _scale
+            p50 = np.asarray(yhat_test)
+            p10 = None
+            p90 = None
+            try:
+                residuals_train = (np.asarray(ds.y_train) * _scale) - np.asarray(yhat_train)
+                if residuals_train.size > 0:
+                    q10, q90 = np.nanquantile(residuals_train, [0.1, 0.9])
+                    p10 = p50 + q10
+                    p90 = p50 + q90
+            except Exception:
+                pass
+
+            y_true_cuts.append(y_true)
+            p50_cuts.append(p50)
+            p10_cuts.append(p10)
+            p90_cuts.append(p90)
 
             # 4) metriche "classiche"
             metrics = {
@@ -222,13 +294,17 @@ class BacktestRunner:
 
             # 7) Preds "timelined" per report
             test_dates = self._get_test_dates(ds)
-            for t, yp, yt in zip(test_dates, yhat_test, y_true):
+            for h_idx, (t, yp, yt) in enumerate(zip(test_dates, yhat_test, y_true), start=1):
                 artifacts_rows.append({
                     "item": item,
                     "cut_idx": cut_idx,
+                    "h": h_idx,
                     "timestamp": str(pd.to_datetime(t).date()) if not pd.isna(t) else "",
                     "y_true": float(yt),
-                    "y_pred": float(yp),
+                    "y_pred": float(yp),  # backward-compatible alias for p50
+                    "p50": float(yp),
+                    "p10": float(p10[h_idx - 1]) if p10 is not None else float("nan"),
+                    "p90": float(p90[h_idx - 1]) if p90 is not None else float("nan"),
                 })
 
             # 8) Artefatti salvati (CSV + XLSX della stock analysis) & MLflow nested run
@@ -280,6 +356,43 @@ class BacktestRunner:
         # 9) Aggregazione per item
         agg = pd.DataFrame([r.metrics for r in results])
         wape_pooled, wape_pooled_valid = self._compute_pooled_wape(abs_error_sum, abs_actual_sum)
+        prob_diag = self._aggregate_probabilistic_diagnostics(
+            y_true_cuts=y_true_cuts,
+            p50_cuts=p50_cuts,
+            p10_cuts=p10_cuts,
+            p90_cuts=p90_cuts,
+        )
+        abs_error_by_h = prob_diag["abs_error_by_h"]
+        coverage_by_h = prob_diag["coverage_by_h"]
+        coverage_10_90 = prob_diag["coverage_10_90"]
+        coverage_available = prob_diag["coverage_available"]
+
+        item_dir = os.path.join(self.output_dir, f"{item}")
+        os.makedirs(item_dir, exist_ok=True)
+        n_h = len(abs_error_by_h)
+        coverage_series = coverage_by_h if coverage_by_h is not None else [float("nan")] * n_h
+        prob_diag_csv = os.path.join(item_dir, f"prob_diagnostics_{item}.csv")
+        pd.DataFrame({
+            "h": np.arange(1, n_h + 1),
+            "abs_error_by_h": abs_error_by_h,
+            "coverage_10_90_by_h": coverage_series,
+        }).to_csv(prob_diag_csv, index=False)
+
+        fig_err = plot_error_vs_horizon(item, abs_error_by_h)
+        error_plot_fp = os.path.join(item_dir, f"{item}_error_vs_horizon.png")
+        fig_err.savefig(error_plot_fp, bbox_inches="tight")
+
+        coverage_plot_fp = None
+        if coverage_available:
+            fig_cov = plot_coverage(
+                product=item,
+                coverage_global=coverage_10_90,
+                expected=0.80,
+                coverage_by_h=coverage_by_h,
+            )
+            coverage_plot_fp = os.path.join(item_dir, f"{item}_coverage_10_90.png")
+            fig_cov.savefig(coverage_plot_fp, bbox_inches="tight")
+
         summary = {
             "item": item,
             "cuts": len(results),
@@ -287,6 +400,7 @@ class BacktestRunner:
             "WAPE_mean": wape_pooled, "WAPE_std": float(agg["WAPE"].std(ddof=1)),
             "WAPE_pooled": wape_pooled, "WAPE_pooled_valid": wape_pooled_valid,
             "WAPE_mean_of_cuts": float(agg["WAPE"].mean()),
+            "coverage_10_90": coverage_10_90,
             "SMAPE_mean": float(agg["SMAPE"].mean()), "SMAPE_std": float(agg["SMAPE"].std(ddof=1)),
             "MASE_mean": float(agg["MASE"].mean()), "MASE_std": float(agg["MASE"].std(ddof=1)),
         }
@@ -302,6 +416,9 @@ class BacktestRunner:
             "preds_csv": item_preds_csv,
             "wape_abs_error_sum": abs_error_sum,
             "wape_abs_actual_sum": abs_actual_sum,
+            "prob_diag_csv": prob_diag_csv,
+            "coverage_plot": coverage_plot_fp,
+            "error_vs_horizon_plot": error_plot_fp,
         }
 
     def run_all(self, items: List[str]) -> Dict[str, Any]:
@@ -332,6 +449,9 @@ class BacktestRunner:
                 global_abs_error_sum += float(res.get("wape_abs_error_sum", 0.0))
                 global_abs_actual_sum += float(res.get("wape_abs_actual_sum", 0.0))
                 mlflow.log_metrics({f"{it}_MAPE_mean": res["summary"]["MAPE_mean"]})
+                for fp in [res.get("prob_diag_csv"), res.get("coverage_plot"), res.get("error_vs_horizon_plot")]:
+                    if fp and os.path.exists(fp):
+                        mlflow.log_artifact(fp, artifact_path=f"{it}/diagnostics")
 
             # global summary
             gdf = pd.DataFrame(all_summaries)
