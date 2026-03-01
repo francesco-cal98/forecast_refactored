@@ -57,12 +57,22 @@ def visualize_forecast_and_safety_stock(product: str,
     # X-axis for plotting
     days = range(1, len(y_pred_prod) + 1)
 
+    # Ensure safety_stock is an array aligned with y_pred_prod
+    safety_stock = np.asarray(safety_stock, dtype=float)
+    if safety_stock.ndim == 0 or safety_stock.size == 1:
+        safety_stock = np.full(len(y_pred_prod), float(safety_stock.flat[0]))
+
+    ss_upper = y_pred_prod + safety_stock
+
     # Forecasted sell-out line
     ax.plot(days, y_pred_prod, label='Previsione', color=palette[0], linewidth=2, linestyle='--')
 
     # Shade area representing forecast + safety stock (as a band of uncertainty)
-    ax.fill_between(days, y_pred_prod, y_pred_prod + safety_stock, 
+    ax.fill_between(days, y_pred_prod, ss_upper,
                     color=palette[1], alpha=0.2, label='Intervallo Safety Stock')
+
+    # Explicit safety-stock trigger line — now point-by-point, shows variability
+    ax.plot(days, ss_upper, color=palette[1], linewidth=1.5, linestyle=':', label='Safety Stock Trigger')
 
     # Required sell-in line (predicted stock to order)
     ax.plot(days, required_sell_in, label='Stima degli ordini', color=palette[2], linewidth=2, linestyle='--')
@@ -295,12 +305,17 @@ def visualize_forecast_and_safety_stock2(product: str,
 # -----------------------------------------------------------------------
 def plot_feat_importance(importance: ArrayLike,
                          feature_names: ArrayLike,
-                         min_importance: float = 0.01,
+                         min_importance: float = 0.0,
                          n_features: int = 10,
                          save_path: str | None = None) -> None:
+    imp = np.asarray(importance, dtype=float)
+    total = imp.sum()
+    # Normalise to % of total so the chart always sums to 100 %
+    imp_pct = 100.0 * imp / total if total > 0 else imp
+
     df_feature_importance = pd.DataFrame({
         'column': feature_names,
-        'importance': importance
+        'importance': imp_pct,
     })
     df_feature_importance = df_feature_importance[
         df_feature_importance['importance'] >= min_importance
@@ -309,8 +324,11 @@ def plot_feat_importance(importance: ArrayLike,
     fig, ax = plt.subplots(figsize=(16, 4))
     ax.barh(df_feature_importance['column'], df_feature_importance['importance'])
     ax.tick_params(axis='both', labelsize=10)
-    ax.set_title('Model Feature Importance', size=20)
-    ax.set_xlabel('Importance', size=15)
+    ax.set_title('Model Feature Importance (% of total)', size=20)
+    ax.set_xlabel('Importance (%)', size=15)
+    # Annotate each bar with its value
+    for i, val in enumerate(df_feature_importance['importance']):
+        ax.text(val + 0.3, i, f'{val:.1f}%', va='center', fontsize=9)
     fig.tight_layout()
 
     if save_path:

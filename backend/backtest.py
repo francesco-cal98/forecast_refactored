@@ -186,8 +186,26 @@ class BacktestRunner:
         p50_cuts: List[np.ndarray] = []
         p10_cuts: List[Optional[np.ndarray]] = []
         p90_cuts: List[Optional[np.ndarray]] = []
+        # OOF relative residuals: grows as cuts finish.
+        # For cut k we pass only residuals from cuts 1..k-1 (true OOS).
+        oof_rel_residuals: List[float] = []
+
+        # Single-series models (ETS, Croston, …) must always train on one series
+        # at a time regardless of the global training_mode setting.
+        _model_name = (getattr(self.cfg.model, "name", "") or "").lower()
+        _SINGLE_SERIES_MODELS = {"ets", "croston"}
+        if _model_name in _SINGLE_SERIES_MODELS:
+            from omegaconf import OmegaConf
+            dataset_extra_cfg = OmegaConf.merge(
+                dataset_extra_cfg,
+                OmegaConf.create({"training_mode": "local"}),
+            )
 
         for cut_idx, cut in enumerate(cuts, start=1):
+            # Snapshot of OOF residuals from *prior* cuts only (cuts 1..k-1).
+            # cut_1 gets None → stock_analysis falls back to inflated train residuals.
+            oof_snapshot = np.asarray(oof_rel_residuals, dtype=float) if oof_rel_residuals else None
+
             # 2) Prepara il dataset per questo cut
             ds = self.dataset_cls(
             csv_file=dataset_cfg.file_path,
@@ -238,6 +256,16 @@ class BacktestRunner:
             yhat_train = yhat_train * _scale
 
             y_true = np.asarray(ds.y_test) * _scale
+
+            # Accumulate OOS relative residuals for calibrating future cuts' safety stock.
+            # Relative = (actual - forecast) / forecast so they're scale-invariant across products.
+            _denom = np.abs(yhat_test) + 1e-6
+            oof_rel_residuals.extend(((y_true - yhat_test) / _denom).tolist())
+
+            # Naive baseline: persist the last observed training value
+            _last_train_val = float(ds.y_train.iloc[-1]) * _scale if len(ds.y_train) > 0 else 0.0
+            _naive_pred = np.full(len(y_true), _last_train_val)
+
             p50 = np.asarray(yhat_test)
             p10 = None
             p90 = None
@@ -261,6 +289,7 @@ class BacktestRunner:
                 "WAPE": float(WAPE(y_true, yhat_test)),
                 "SMAPE": float(SMAPE(y_true, yhat_test)),
                 "MASE": float(MASE(y_true, yhat_test)),
+                "WAPE_naive": float(WAPE(y_true, _naive_pred)),
             }
             abs_error_sum += float(np.sum(np.abs(y_true - yhat_test)))
             abs_actual_sum += float(np.sum(np.abs(y_true)))
@@ -281,6 +310,7 @@ class BacktestRunner:
                 product_name=item,
                 save_fp=cut_dir,
                 train_on_log=False,
+                oof_residuals=oof_snapshot,   # OOS residuals from prior cuts
             )
 
             # 6) log extra metriche dalla stock analysis
@@ -294,13 +324,21 @@ class BacktestRunner:
                 pass
 
             # 7) Preds "timelined" per report
+            # timestamp = predicted period (feature date + nr_horizon)
             test_dates = self._get_test_dates(ds)
+            _nr = dataset_cfg.nr_horizon
+            _gran = getattr(dataset_cfg, "granularity", "weekly")
+            _ts_offset = pd.DateOffset(months=_nr) if _gran == "monthly" else pd.DateOffset(weeks=_nr)
             for h_idx, (t, yp, yt) in enumerate(zip(test_dates, yhat_test, y_true), start=1):
+                try:
+                    _pred_ts = str((pd.to_datetime(t) + _ts_offset).date())
+                except Exception:
+                    _pred_ts = str(pd.to_datetime(t).date()) if not pd.isna(t) else ""
                 artifacts_rows.append({
                     "item": item,
                     "cut_idx": cut_idx,
                     "h": h_idx,
-                    "timestamp": str(pd.to_datetime(t).date()) if not pd.isna(t) else "",
+                    "timestamp": _pred_ts,
                     "y_true": float(yt),
                     "y_pred": float(yp),  # backward-compatible alias for p50
                     "p50": float(yp),
@@ -335,13 +373,11 @@ class BacktestRunner:
                 png_test = os.path.join(cut_dir, f"{item}_stock_analysis.png")
                 png_train = os.path.join(cut_dir, f"{item}_stock_analysis_train.png")
                 png_inventory_band = os.path.join(cut_dir, f"{item}_inventory_scenario_band.png")
+                png_feat_imp = os.path.join(cut_dir, f"{item}_feature_importance.png")
 
-                if os.path.exists(png_test):
-                    mlflow.log_artifact(png_test, artifact_path=f"{item}/cut_{cut_idx}")
-                if os.path.exists(png_train):
-                    mlflow.log_artifact(png_train, artifact_path=f"{item}/cut_{cut_idx}")
-                if os.path.exists(png_inventory_band):
-                    mlflow.log_artifact(png_inventory_band, artifact_path=f"{item}/cut_{cut_idx}")
+                for _png in (png_test, png_train, png_inventory_band, png_feat_imp):
+                    if os.path.exists(_png):
+                        mlflow.log_artifact(_png, artifact_path=f"{item}/cut_{cut_idx}")
 
                 # Preds CSV e Stock XLSX
                 mlflow.log_artifact(preds_csv_fp, artifact_path=f"{item}/cut_{cut_idx}")

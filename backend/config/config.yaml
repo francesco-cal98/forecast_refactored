@@ -133,10 +133,10 @@ cv:
   n_folds: 4            # 4 cuts; cuts 3-4 use ~40-48w training windows (still sufficient for LGBM)
   val_len: "8w"
   scoring: "neg_mean_absolute_error"
-  recency_gamma: 0.08
+  recency_gamma: 0.0
 
 stock:
-  safety_stock_window: 4
+  safety_stock_window: 24
   lead_time: 1
   service_level: 0.95
 
@@ -148,4 +148,4 @@ mlflow:
 backtest:
   enabled: true
   n_cuts: 4             # matches cv.n_folds
-  output_dir: "outputs/backtest"
+  output_dir: "outputs/backtest/${model.name}"

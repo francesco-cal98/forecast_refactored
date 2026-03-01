@@ -1,0 +1,20 @@
+name: "ets"
+
+# Holt-Winters Exponential Smoothing (statsmodels ExponentialSmoothing)
+# - trend: "add" (additive) or "mul" (multiplicative)
+# - seasonal: "mul" preferred for demand with proportional spikes (e.g. Dec 2.8x).
+#             Auto-falls back to "add" if < 1.5 seasonal cycles or zeros in y_train.
+# - damped_trend: True reduces over-projection on long horizons (recommended)
+# - seasonal_periods: 12 for monthly data
+#
+# NOTE: ETS ignores X_train features entirely — it fits only on y_train.
+# This makes it a pure time-series benchmark with no feature engineering.
+# Compare its WAPE against ML models to judge whether features add value.
+
+params:
+  seasonal_periods: 12
+  trend: "add"
+  seasonal: "mul"
+  damped_trend: true
+
+param_grid: {}

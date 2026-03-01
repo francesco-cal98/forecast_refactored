@@ -1,6 +1,7 @@
 defaults:
   - model: light_gbm
   - data: praenova           # ← praenova data source (area-level sheets only)
+  - _self_
 
 # Opzioni extra per SalesDataset
 dataset_config:
@@ -8,6 +9,10 @@ dataset_config:
   base_year: 2023            # Year 1 in xlsx → ISO year 2023
   training_mode: local       # "local" = one model per series | "global" = pool all series
   known_future_promos: false
+  winsorize_target:
+    enabled: true
+    factor: 3.0        # cap at 3× backward rolling median
+    window: 8          # 8-week look-back window for the median
   market_lags: [1, 4, 8, 12]
   market_trend_windows: [4, 8]
   per_series_scaling:
@@ -117,4 +122,4 @@ mlflow:
 backtest:
   enabled: true
   n_cuts: 2
-  output_dir: "outputs/backtest_praenova"
+  output_dir: "outputs/backtest_praenova/${model.name}"

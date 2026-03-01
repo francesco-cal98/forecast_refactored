@@ -75,7 +75,11 @@ class SalesDataset:
 
         # Load dataset
         if csv_file.endswith(".csv"):
-            self.dataset = pd.read_csv(csv_file, sep=separator)
+            if self.config.get("loader") == "auto":
+                from data.ingest import load_canonical
+                self.dataset = load_canonical(csv_file, self.config)
+            else:
+                self.dataset = pd.read_csv(csv_file, sep=separator)
         elif csv_file.endswith(".xlsx") or csv_file.endswith(".xls"):
             if self.config.get("loader") == "praenova":
                 from prototype.praenova.io import load_area_panel
@@ -86,6 +90,9 @@ class SalesDataset:
                 # Drop promo_type: it uses pd.StringDtype which breaks fillna(0) downstream.
                 # promo_flag (binary int) is the usable signal and is kept.
                 self.dataset = self.dataset.drop(columns=["promo_type"], errors="ignore")
+            elif self.config.get("loader") == "auto":
+                from data.ingest import load_canonical
+                self.dataset = load_canonical(csv_file, self.config)
             else:
                 self.dataset = load_weekly_data_with_prices(filepath=csv_file)
         else:
@@ -128,6 +135,8 @@ class SalesDataset:
             "aggregation",
             {self.target_column: "sum", "Prezzo": "mean"},
         )
+        # Drop keys for columns that don't exist in this dataset
+        agg_config = {k: v for k, v in agg_config.items() if k in df.columns}
 
         df = (
             df.groupby([self.product_var, "YearMonth"], as_index=False)
@@ -208,6 +217,23 @@ class SalesDataset:
         # Sorting is key for rolling/shift
         df = df.sort_values([self.product_var, self.date_column]).reset_index(drop=True)
 
+        # ── Optional per-series target winsorization ──────────────────────────
+        # Caps isolated spikes using a backward-looking rolling median so there
+        # is zero data leakage. Controlled by dataset_config.winsorize_target.
+        _wz = self.config.get("winsorize_target", {})
+        if _wz.get("enabled", False):
+            _wz_factor = float(_wz.get("factor", 3.0))
+            _wz_window = int(_wz.get("window", 8))
+
+            def _winsorise(s: pd.Series) -> pd.Series:
+                cap = s.shift(1).rolling(_wz_window, min_periods=1).median() * _wz_factor
+                return s.clip(upper=cap)
+
+            df[self.target_column] = (
+                df.groupby(self.product_var)[self.target_column]
+                .transform(_winsorise)
+            )
+
         # Stable product id column
         df["product_id"] = df[self.product_var]
 
@@ -247,12 +273,46 @@ class SalesDataset:
         df["quarter"] = df[self.date_column].dt.quarter
 
         # ------------------------
+        # TARGET-DATE seasonality features (critical for nr_horizon > 0)
+        # ------------------------
+        # With nr_horizon=h, we are predicting period t+h from features at t.
+        # All standard features above encode *t* (feature date), so the model
+        # sees "November" when it needs to predict "December" (h=1 monthly).
+        # Adding target-date features gives the model the correct seasonal context.
+        if self.pred_h > 0:
+            if is_weekly:
+                _target_t = ((df["week_number"].astype(int) - 1 + self.pred_h) % 52) + 1
+                _target_period = 52.0
+                df["target_week_number"] = _target_t.astype(int)
+            else:
+                _target_t = ((df[self.date_column].dt.month - 1 + self.pred_h) % 12) + 1
+                _target_period = 12.0
+                df["target_month"] = _target_t.astype(int)
+                df["target_quarter"] = ((_target_t - 1) // 3 + 1).astype(int)
+            _target_ft = _target_t.astype(float)
+            for k in range(1, _fourier_K + 1):
+                df[f"target_fourier_sin_k{k}"] = np.sin(2 * np.pi * k * _target_ft / _target_period)
+                df[f"target_fourier_cos_k{k}"] = np.cos(2 * np.pi * k * _target_ft / _target_period)
+
+        # ------------------------
         # LAG features
         # ------------------------
         for col, lag in self.prepare_config.get("lag", {}).get(self.granularity, {}).items():
             lags = [lag] if isinstance(lag, (int)) else lag
             for l in lags:
                 df[f"{col}_{l}{unit}"] = df.groupby(self.product_var)[col].shift(l)
+
+        # Horizon-adjusted YoY lag: captures "same target period last year".
+        # For monthly h=1: lag_11 at t=Nov gives Dec-of-last-year (the holiday spike).
+        # For weekly  h=8: lag_44 at t=W44 gives the equivalent week last year.
+        # Only auto-added if the column doesn't already exist (no conflict with user lags).
+        if self.pred_h > 0:
+            _yoy_period = 52 if is_weekly else 12
+            _yoy_shift = _yoy_period - self.pred_h
+            if 1 <= _yoy_shift < _yoy_period:
+                _yoy_col = f"{self.target_column}_{_yoy_shift}{unit}"
+                if _yoy_col not in df.columns:
+                    df[_yoy_col] = df.groupby(self.product_var)[self.target_column].shift(_yoy_shift)
 
         # ------------------------
         # Percentage changes (pct_change)
@@ -349,12 +409,14 @@ class SalesDataset:
             df[_wsp_col] = df.groupby(self.product_var)[self.target_column].transform(_weeks_since_peak)
 
         # ---- Z-score per-serie (su lag semplici del target) ----
-        for w in [8, 26]:
-            mu = df.groupby(self.product_var)[f"{self.target_column}_1{unit}"]\
-                .transform(lambda s: s.rolling(w, min_periods=4).mean())
-            sd = df.groupby(self.product_var)[f"{self.target_column}_1{unit}"]\
-                .transform(lambda s: s.rolling(w, min_periods=4).std().replace(0, np.nan))
-            df[f"{self.target_column}_1{unit}_z{w}"] = (df[f"{self.target_column}_1{unit}"] - mu) / sd
+        _lag1_col = f"{self.target_column}_1{unit}"
+        if _lag1_col in df.columns:
+            for w in [8, 26]:
+                mu = df.groupby(self.product_var)[_lag1_col]\
+                    .transform(lambda s: s.rolling(w, min_periods=4).mean())
+                sd = df.groupby(self.product_var)[_lag1_col]\
+                    .transform(lambda s: s.rolling(w, min_periods=4).std().replace(0, np.nan))
+                df[f"{_lag1_col}_z{w}"] = (df[_lag1_col] - mu) / sd
 
         # ---- Prezzo relativo e gap rispetto al mercato (lag 1) ----
         if "Prezzo" in df.columns:
@@ -407,7 +469,12 @@ class SalesDataset:
 
         # Final cleanup
         df = df.reset_index(drop=True)
-        df.fillna(0, inplace=True)
+        # Fill NaN in feature columns only; preserve NaN in the forward-target
+        # so that process_data can drop rows where the horizon extends past
+        # the end of the series (necessary when nr_horizon > 1).
+        _y_fwd_col = f"{self.target_column}_fwd_{self.pred_h}{'M' if self.granularity == 'monthly' else 'W'}"
+        _feat_cols = [c for c in df.columns if c != _y_fwd_col]
+        df[_feat_cols] = df[_feat_cols].fillna(0)
 
         if self.debug_save:
             try:
@@ -473,7 +540,7 @@ class SalesDataset:
 
         # Masks: TEST = future of target series only (same in both modes)
         # TRAIN depends on training_mode:
-        #   "global" (default) — all other series + past of target (multi-series pool)
+        #   "global" (default) — pool series (optionally restricted by pool_series list)
         #   "local"            — only past of target series (univariate)
         _training_mode = self.config.get("training_mode", "global")
         if _training_mode == "local":
@@ -483,14 +550,25 @@ class SalesDataset:
                 & (df[self.date_column] >= begin_train_date)
             )
         else:
-            train_mask = (
-                (df[self.product_var] != product_to_use)
-                | (
-                    (df[self.product_var] == product_to_use)
+            # Global: pool series, but cut ALL of them at the boundary
+            # to avoid leaking future data from non-target series into training.
+            # If pool_series is set, restrict pooling to those series only
+            # (the target series is always included regardless).
+            _pool_series = self.config.get("pool_series", None)
+            if _pool_series is not None:
+                _allowed = list(_pool_series)
+                if product_to_use not in _allowed:
+                    _allowed.append(product_to_use)
+                train_mask = (
+                    (df[self.product_var].isin(_allowed))
                     & (df[self.date_column] < boundary_date)
                     & (df[self.date_column] >= begin_train_date)
                 )
-            )
+            else:
+                train_mask = (
+                    (df[self.date_column] < boundary_date)
+                    & (df[self.date_column] >= begin_train_date)
+                )
 
         test_mask = (
             (df[self.product_var] == product_to_use)
@@ -508,6 +586,13 @@ class SalesDataset:
         )
         if y_col not in sel_cols:
             sel_cols.append(y_col)
+        # Always include target-date seasonality features (generated in _prepare_dataset)
+        # so they survive column_selection regardless of config regex coverage.
+        _target_prefixes = ("target_month", "target_quarter", "target_week_number",
+                            "target_fourier_sin_k", "target_fourier_cos_k")
+        for _c in df.columns:
+            if _c.startswith(_target_prefixes) and _c not in sel_cols:
+                sel_cols.append(_c)
         # Ensure the groupby and date columns survive column selection regardless
         # of what the config includes (mirrors the existing y_col guard above).
         for _must_keep in [self.product_var, self.date_column]:
@@ -522,6 +607,11 @@ class SalesDataset:
         # Sort each split chronologically within each product
         df_train = df.loc[train_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
         df_test  = df.loc[test_mask].sort_values([self.product_var, self.date_column]).reset_index(drop=True)
+
+        # Drop rows where the forward target is NaN — happens when nr_horizon > 1
+        # and the forecast horizon extends beyond the last available observation.
+        df_train = df_train.dropna(subset=[y_col])
+        df_test  = df_test.dropna(subset=[y_col])
 
         # Store raw dates separately (used by Forecaster.fit() for sample weight computation)
         self.train_dates = df_train[self.date_column].reset_index(drop=True)

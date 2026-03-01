@@ -9,6 +9,6 @@ separator: ";"                  # unused for xlsx, kept for interface parity
 date_column: "date"
 target_column: "sales_units"
 product_column: "series_id"    # e.g. Product_01_Area1
-nr_horizon: 1
+nr_horizon: 8
 product_name: "Product_01_Area1"   # default for single-run mode
 granularity: "weekly"

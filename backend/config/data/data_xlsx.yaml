@@ -1,0 +1,13 @@
+# Data source: data.xlsx
+# Single-sheet monthly cross-tab (rows = product series, columns = months).
+# Ingested automatically by load_canonical() via loader: auto.
+# Output columns: series_id | date | sales_units
+
+file_path: "C:\\Users\\fraca\\forecast_refactored\\data.xlsx"
+separator: ","                  # unused for xlsx; kept for interface parity
+date_column: "date"
+target_column: "sales_units"
+product_column: "series_id"
+nr_horizon: 1                   # 1-month-ahead direct forecast (predict demand at t+1)
+product_name: "Perfume"        # default series for single-run mode
+granularity: "monthly"

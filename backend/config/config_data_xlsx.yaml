@@ -1,0 +1,106 @@
+defaults:
+  - model: light_gbm
+  - data: data_xlsx              # monthly cross-tab, auto-ingested
+  - _self_
+
+dataset_config:
+  loader: auto                   # triggers load_canonical() in dataset.py
+  base_year: 2023                # first year in the data (Jan = 2023-01)
+  training_mode: global         # pool related series for more December examples
+  pool_series:                  # only pool these; Skincare excluded (different category)
+    - "Parfum_1"
+    - "Parfum_2"
+  known_future_promos: false
+  winsorize_target:
+    enabled: true
+    factor: 3.0                  # cap at 3× backward rolling median
+    window: 12                   # 12-month look-back: includes prior Dec in window so seasonal spike is not clipped
+  # No multi-series market features: only 3 series, no shared market signal
+  market_lags: []
+  market_trend_windows: []
+  per_series_scaling:
+    enabled: true
+    method: zscore
+    windows: [6, 12]
+
+prepare:
+  lag:
+    monthly:
+      ${data.target_column}: [1, 2, 3, 6, 12]
+
+  percentage:
+    monthly:
+      ${data.target_column}: [1, 3, 12]
+
+  rolling:
+    max:
+      monthly:
+        ${data.target_column}: [3, 6]
+    min:
+      monthly:
+        ${data.target_column}: [3, 6]
+    std:
+      monthly:
+        ${data.target_column}: [3, 6]
+    median:
+      monthly:
+        ${data.target_column}: [3, 6, 12]
+
+  trend:
+    monthly:
+      ${data.target_column}: [3, 6]
+
+column_selection:
+  prefixes: []
+  suffixes:
+    - "sin"
+    - "cos"
+    - "trend"
+    - "percentage"
+    - "season"
+    - "month"
+  regex:
+    - "_rolling_.*_\\d+[WM]$"
+    - "week_number$"
+    - "is_peak_season$"
+    - "^month$"
+    - "^quarter$"
+    - "^fourier_(sin|cos)_k\\d+$"
+    - f"{data.date_column}_sin$"
+    - f"{data.date_column}_cos$"
+    - f"^{data.target_column}_\\d+[WM]$"
+    - "^product_age_w$"
+
+  to_exclude:
+    - "^market_sum_ex$"
+    - "^market_mean_ex$"
+  callables: []
+
+train:
+  # data.xlsx: 24 months (Jan 2023 → Dec 2024).
+  # 2 cuts × 3M test = 6M held out; train_len=18M covers the rest.
+  train_len: "18m"
+  test_len:  "4m"
+  # With nr_horizon=1 and test_len=3m, boundary must be ≤ Sep 2024
+  # so last test row (boundary+2M=Nov 2024) has a valid label at Nov+1M=Dec 2024.
+  boundary: "2024-09-01"
+
+cv:
+  n_folds: 2
+  val_len: "3m"
+  scoring: "neg_mean_absolute_error"
+  recency_gamma: 0.08
+
+stock:
+  safety_stock_window: 24       # use full training history so Dec residuals are always included
+  lead_time: 1
+  service_level: 0.95
+
+mlflow:
+  tracking_uri: "file:./mlruns"
+  experiment_name: "data-xlsx-backtest"
+
+backtest:
+  enabled: true
+  n_cuts: 2
+  output_dir: "outputs/backtest_data_xlsx/${model.name}"

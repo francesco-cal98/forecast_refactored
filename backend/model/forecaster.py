@@ -38,6 +38,24 @@ try:
 except Exception:
     _HAS_LGBM = False
 
+try:
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    _HAS_STATSMODELS = True
+except Exception:
+    _HAS_STATSMODELS = False
+
+
+class _ETSModelProxy:
+    """
+    Thin proxy so backtest.py can call fore.model.predict(Xtr_num) on an ETS
+    model and get back the in-sample fitted values (same length as X, ignoring X).
+    """
+    def __init__(self, fitted_values: np.ndarray):
+        self._fitted = np.asarray(fitted_values)
+
+    def predict(self, X=None) -> np.ndarray:
+        return self._fitted
+
 from utils.metrics import MAPE, WAPE
 from utils.helper import compute_temporal_sample_weights
 from utils.plots import (
@@ -66,6 +84,9 @@ class Forecaster:
             default.update(self.params); return LGBMRegressor(**default)
         if self.model_name == "svr":
             return svm.SVR(**self.params)
+        if self.model_name == "ets":
+            # ETS is stateful — model is set during fit(), not here
+            return None
         raise NotImplementedError(f"{self.model_name} not implemented")
 
     def fit(
@@ -77,6 +98,38 @@ class Forecaster:
         recency_gamma: float = 0.08,
         sample_weight: Optional[np.ndarray] = None,
     ):
+        # ── ETS path: ignores X, fits Holt-Winters on y_train ──────────────
+        if self.model_name == "ets":
+            if not _HAS_STATSMODELS:
+                raise ImportError("statsmodels is required for ETS. Run: pip install statsmodels")
+            y_arr = np.asarray(y_train, dtype=float)
+            sp = int(self.params.get("seasonal_periods", 12))
+            trend = str(self.params.get("trend", "add"))
+            # Use multiplicative seasonal only when we have enough cycles AND all-positive target
+            n_cycles = len(y_arr) / sp
+            has_zeros = np.any(y_arr <= 0)
+            seasonal = "mul" if (n_cycles >= 1.5 and not has_zeros) else "add"
+            if seasonal == "add" and str(self.params.get("seasonal", "mul")) == "mul":
+                print(f"[ETS] falling back to additive seasonality "
+                      f"(cycles={n_cycles:.1f}, has_zeros={has_zeros})")
+            hw = ExponentialSmoothing(
+                y_arr,
+                trend=trend,
+                seasonal=seasonal,
+                seasonal_periods=sp,
+                damped_trend=bool(self.params.get("damped_trend", True)),
+                initialization_method="estimated",
+            )
+            self._ets_result = hw.fit(optimized=True)
+            fitted = np.asarray(self._ets_result.fittedvalues)
+            # Replace leading NaNs (ETS burn-in) with first valid value
+            if np.any(np.isnan(fitted)):
+                first_valid = fitted[~np.isnan(fitted)][0] if np.any(~np.isnan(fitted)) else 0.0
+                fitted = np.where(np.isnan(fitted), first_valid, fitted)
+            self.model = _ETSModelProxy(fitted)
+            self.regressor_names = None
+            return
+        # ── ML path (sklearn / LightGBM) ───────────────────────────────────
         non_numeric = X_train.select_dtypes(exclude=[np.number]).columns.tolist()
         X_num = X_train.drop(columns=non_numeric) if non_numeric else X_train
         weights = sample_weight
@@ -94,6 +147,14 @@ class Forecaster:
         self.regressor_names = getattr(self.model, "feature_names_in_", X_num.columns.to_numpy())
 
     def predict(self, X: pd.DataFrame, y: Optional[pd.Series] = None, error_fun=WAPE, *, train_on_log: bool = False):
+        # ── ETS path: forecast n_steps beyond the training window ───────────
+        if self.model_name == "ets":
+            n_steps = len(y) if y is not None else len(X)
+            y_pred = np.maximum(0.0, self._ets_result.forecast(n_steps))
+            y_true = y
+            err = error_fun(y_true, y_pred) if (y_true is not None) else None
+            return y_pred, err
+        # ── ML path ─────────────────────────────────────────────────────────
         non_numeric = X.select_dtypes(exclude=[np.number]).columns.tolist()
         X_num = X.drop(columns=non_numeric) if non_numeric else X
         y_pred = self.model.predict(X_num)
@@ -120,6 +181,7 @@ class Forecaster:
         product_name: str = "Prodotto",
         save_fp: str = "outputs",
         train_on_log: bool = False,
+        oof_residuals: Optional[np.ndarray] = None,
     ):
         print("[stock_analysis] Starting inventory simulation...")
 
@@ -135,12 +197,50 @@ class Forecaster:
         y_test = np.asarray(y_test)
         y_pred_test = np.asarray(y_pred_test)
 
-        # Safety stock based on recent train window
+        # ── Point-by-point empirical safety stock ────────────────────────────
+        # Relative residuals: (actual - forecast) / forecast
+        #   positive = actual > predicted = unmet demand risk
+        #
+        # Source priority:
+        #   1. OOF residuals from prior backtest cuts  ← out-of-sample, unbiased
+        #   2. Recent training residuals × 1.5 inflation ← in-sample fallback
+        #      (training errors are optimistic; inflation partially corrects that)
+        #
+        # SS[t] = rel_buffer × forecast[t] × √(lead_time)
+        # → December automatically gets proportionally more safety stock.
+        _OOF_MIN_PTS = 3          # minimum OOF points for a reliable quantile
+        _TRAIN_INFLATION = 1.5    # inflate training quantile to compensate optimism
+
         window = min(safety_stock_time, len(y_train))
-        forecast_error_std = np.std(y_pred_train[-window:] - y_train[-window:])
-        z_score = stats.norm.ppf(expected_service_level)
-        safety_stock = z_score * forecast_error_std * np.sqrt(lead_time)
-        print(f"  Safety stock: {safety_stock:.2f}")
+        _pred_w = y_pred_train[-window:]
+        _true_w = y_train[-window:]
+        _train_rel = (_true_w - _pred_w) / (np.abs(_pred_w) + 1e-6)
+
+        # Always include inflated training residuals as a seasonal prior.
+        # OOF residuals (when available) are appended unweighted — they're unbiased
+        # but may cover a different season than the test window (e.g. summer OOF
+        # calibrating a winter test).  By pooling both, December training residuals
+        # still anchor the quantile even when OOF data is scarce or off-season.
+        _rel_for_ss = _train_rel * _TRAIN_INFLATION   # start with inflated training
+        if oof_residuals is not None and len(oof_residuals) >= _OOF_MIN_PTS:
+            _rel_for_ss = np.concatenate([_rel_for_ss, np.asarray(oof_residuals, dtype=float)])
+            _ss_source  = (f"train×{_TRAIN_INFLATION}(n={len(_train_rel)}) "
+                           f"+ OOF(n={len(oof_residuals)}, unbiased)")
+        else:
+            n_oof = len(oof_residuals) if oof_residuals is not None else 0
+            _ss_source  = f"train×{_TRAIN_INFLATION} only (OOF n={n_oof} < {_OOF_MIN_PTS})"
+
+        rel_buffer = float(np.quantile(_rel_for_ss, expected_service_level))
+        rel_buffer = max(rel_buffer, 0.0)   # SS can't be negative
+
+        # Point-by-point arrays
+        safety_stock_test  = rel_buffer * y_pred_test * np.sqrt(lead_time)
+        safety_stock_train = rel_buffer * y_pred_train * np.sqrt(lead_time)
+        # Scalar summary for printing
+        safety_stock = float(np.mean(safety_stock_test))
+        print(f"  Safety stock rel_buffer: {rel_buffer:.1%}  [{_ss_source}]  "
+              f"mean={safety_stock:.0f}  "
+              f"range=[{safety_stock_test.min():.0f}–{safety_stock_test.max():.0f}]")
 
         # Bias
         bias_window = min(3, len(y_train))
@@ -191,7 +291,7 @@ class Forecaster:
 
         for i in range(n_train):
             future_demand = float(np.mean(y_pred_train[i:i + weeks_to_cover]))
-            required_stock = future_demand + safety_stock
+            required_stock = future_demand + float(safety_stock_train[i])
             order = max(0.0, required_stock - current_stock)
             forecast_sell_in_train[i] = order
             current_stock = max(0.0, current_stock + order - float(y_train[i]))
@@ -208,7 +308,7 @@ class Forecaster:
 
         for i in range(n_test):
             future_demand = float(np.mean(y_pred_test_corrected[i:i + weeks_to_cover]))
-            required_stock = future_demand + safety_stock
+            required_stock = future_demand + float(safety_stock_test[i])
             order = max(0.0, required_stock - current_stock)
             forecast_sell_in_test.append(order)
             current_stock += order
@@ -221,7 +321,7 @@ class Forecaster:
                 lost_sales.append(0.0)
                 current_stock -= demand
             stock_test.append(current_stock)
-            stock_test1.append((order + safety_stock) - demand)
+            stock_test1.append((order + float(safety_stock_test[i])) - demand)
 
         if stock_test:
             stock_test1[0] = float(np.mean(stock_train[max(0, n_train - weeks_to_cover):]))
@@ -270,7 +370,7 @@ class Forecaster:
             y_pred_prod=y_pred_test_corrected,
             y=y_test,
             weekly_stock=stock_test_arr,
-            safety_stock=np.full_like(y_pred_test_corrected, safety_stock),
+            safety_stock=safety_stock_test,          # point-by-point array
             required_sell_in=forecast_sell_in_test,
             stock_cover=stock_cover,
         )
@@ -279,7 +379,7 @@ class Forecaster:
             y_pred_prod=y_pred_train,
             y=y_train,
             weekly_stock=stock_train,
-            safety_stock=np.full_like(y_pred_train, safety_stock),
+            safety_stock=safety_stock_train,         # point-by-point array
             required_sell_in=forecast_sell_in_train,
             stock_cover=np.zeros_like(y_pred_train),
         )
@@ -295,7 +395,7 @@ class Forecaster:
             stock_low=stock_low,
             stock_base=stock_base,
             stock_high=stock_high,
-            safety_stock_line=np.full_like(stock_base, safety_stock),
+            safety_stock_line=safety_stock_test,  # point-by-point, not flat scalar
         )
 
         if save_fp:
@@ -316,8 +416,8 @@ class Forecaster:
                     feature_names=self.regressor_names,
                     save_path=feat_imp_path,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [feature importance] could not save: {e}")
 
         return pd.DataFrame({
             "y_test": y_test,
@@ -331,7 +431,7 @@ class Forecaster:
             "lost_sales_low": lost_sales_low,
             "lost_sales_base": lost_sales_base,
             "lost_sales_high": lost_sales_high,
-            "safety_stock": safety_stock,
+            "safety_stock": safety_stock_test,       # point-by-point array
             "service_level": service_level,
             "service_level_low": service_level_low,
             "service_level_base": service_level_base,
